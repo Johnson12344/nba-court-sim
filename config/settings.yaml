@@ -1,0 +1,39 @@
+model_version: "0.3.0"
+simulation:
+  default_count: 5000
+  max_count: 10000
+  possession_seconds_mean: 13.0
+  possession_seconds_sd: 4.8
+  max_overtimes: 8
+  home_efficiency_multiplier: 1.015
+  minute_uncertainty_sd: 0.08
+blending:
+  completed_season_weight: 1.0
+  older_season_decay: 0.65
+  current_season_prior_games: 20
+  recent_minutes_weight: 0.25
+  recent_usage_weight: 0.12
+  recent_shooting_weight: 0.05
+  shooting_prior_attempts: 80
+  zone_prior_attempts: 120
+  play_by_play_prior_minutes: 100
+  rotation_minutes_weight: 0.65
+data:
+  request_timeout_seconds: 30
+  max_retries: 3
+  backoff_seconds: 2
+  request_pause_seconds: 1.0
+  cache_max_age_hours: 168
+league_priors:
+  turnover_rate: 0.125
+  shooting_foul_rate: 0.105
+  offensive_rebound_rate: 0.265
+  assist_rate: 0.61
+  ft_pct: 0.78
+  zones:
+    rim: {attempt_share: 0.30, make_pct: 0.66, points: 2}
+    paint: {attempt_share: 0.17, make_pct: 0.45, points: 2}
+    midrange: {attempt_share: 0.12, make_pct: 0.42, points: 2}
+    corner_three: {attempt_share: 0.09, make_pct: 0.38, points: 3}
+    above_break_three: {attempt_share: 0.32, make_pct: 0.36, points: 3}
+
