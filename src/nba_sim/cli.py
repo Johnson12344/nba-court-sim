@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_MAX_THREADS"):
     os.environ[variable] = "1"
@@ -20,10 +22,15 @@ from nba_sim.data.demo_provider import DemoProvider
 from nba_sim.data.nba_stats_provider import NbaStatsProvider
 from nba_sim.data.validation import validate_data
 from nba_sim.evaluation.backtest import walk_forward_backtest
+from nba_sim.evaluation.forward import evaluate_forward, record_boxscore, refresh_results
+from nba_sim.features.availability import apply_lineups, write_lineup_template
 from nba_sim.features.profile_builder import build_team_profile
 from nba_sim.features.blending import blend_team_profiles
 from nba_sim.features.historical_weights import current_season_weight
-from nba_sim.market.odds_api import build_market_comparison, find_matchup, load_odds_cache, refresh_nba_odds
+from nba_sim.market.odds_api import build_market_comparison, load_odds_cache, refresh_nba_odds
+from nba_sim.market.odds_api import NBA_TEAM_NAMES
+from nba_sim.market.events import age_minutes, select_event, upcoming_events, utc_time
+from nba_sim.market.edges import build_edge_report
 from nba_sim.reporting.console_report import render_report
 from nba_sim.reporting.export import export_run
 from nba_sim.reporting.summary import create_summary
@@ -65,6 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
     odds.add_argument("--regions", default="us", help="Bookmaker region, such as us, uk, eu, or au")
     odds.add_argument("--bookmakers", help="Optional comma-separated bookmaker keys")
     odds.add_argument("--include-player-props", action="store_true", help="Also fetch points, rebounds, and assists for this matchup")
+    odds.add_argument("--event-id", help="Exact event from fixtures; requires home and away")
+
+    fixtures = sub.add_parser("fixtures", help="List upcoming games from downloaded odds; no API credits")
+    fixtures.add_argument("--timezone", default="Africa/Lagos", help="Display timezone (default Africa/Lagos)")
+
+    sub.add_parser("refresh-results", help="Download final scores from the last three days for prediction tracking")
+    record = sub.add_parser("record-result", help="Download a final NBA box score for a saved prediction")
+    record.add_argument("--run", type=Path, required=True, help="Saved simulation output folder")
+    record.add_argument("--nba-game-id", required=True, help="Ten-digit NBA game ID from its NBA.com link")
+    sub.add_parser("evaluate", help="Compare saved pregame predictions and paper selections with cached final results")
 
     validate = sub.add_parser("validate-data", help="Validate cached official data or manual CSV files")
     validate.add_argument("--season", required=True)
@@ -83,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--workers", type=int, default=0, help="Worker processes; 0 selects automatically")
     simulate.add_argument("--mode", choices=("real", "demo"), default="real")
     simulate.add_argument("--no-odds", action="store_true", help="Do not attach a matching locally cached market comparison")
+    simulate.add_argument("--event-id", help="Exact upcoming event ID from fixtures")
+    lineup = simulate.add_mutually_exclusive_group()
+    lineup.add_argument("--write-lineups", type=Path, help="Write a review CSV for this fixture and exit without simulation")
+    lineup.add_argument("--lineups", type=Path, help="Apply reviewed player status and expected minutes CSV")
+    simulate.add_argument("--max-odds-age-minutes", type=float, default=60, help="Maximum quote age for review candidates")
+    simulate.add_argument("--min-ev", type=float, default=0.02, help="Minimum modeled profit per unit for a review candidate")
     _add_source(simulate)
 
     backtest = sub.add_parser("backtest", help="Walk-forward evaluation from historical_games.csv")
@@ -134,9 +157,10 @@ def refresh_odds_command(args: argparse.Namespace) -> int:
         home=args.home,
         away=args.away,
         include_player_props=args.include_player_props,
+        event_id=args.event_id,
     )
     console = Console()
-    matched = find_matchup(cache["events"], args.home, args.away) if args.home and args.away else None
+    matched = select_event(cache, args.home, args.away, args.event_id) if args.home and args.away else None
     core_quota = cache.get("quota", {}).get("core", {})
     console.print(
         f"[green]Odds cached[/green]: {len(cache['events'])} active/upcoming NBA games from The Odds API. "
@@ -151,6 +175,53 @@ def refresh_odds_command(args: argparse.Namespace) -> int:
             )
         else:
             console.print(f"[yellow]No current sportsbook event matched {args.away} at {args.home}.[/yellow]")
+    return 0
+
+
+def fixtures_command(args: argparse.Namespace) -> int:
+    from rich.table import Table
+    cache = load_odds_cache(project_path("data", "processed"))
+    if not cache:
+        raise ValueError("No odds cache. Run refresh-odds first.")
+    try:
+        zone = ZoneInfo(args.timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("Unknown timezone; use Africa/Lagos or UTC") from exc
+    table = Table(title=f"Upcoming NBA fixtures ({args.timezone})")
+    for column in ("Start", "Away", "Home", "Event ID", "Books", "Prop books"):
+        table.add_column(column, min_width=32 if column == "Event ID" else None,
+                         no_wrap=column == "Event ID")
+    abbreviations = {name: code for code, name in NBA_TEAM_NAMES.items()}
+    for event in upcoming_events(cache):
+        table.add_row(utc_time(event["commence_time"]).astimezone(zone).strftime("%m-%d %H:%M"),
+                      abbreviations.get(event["away_team"], event["away_team"]),
+                      abbreviations.get(event["home_team"], event["home_team"]), str(event["id"]),
+                      str(len(event.get("bookmakers", []))), str(len(event.get("player_prop_bookmakers", []))))
+    console = Console()
+    console.print(table)
+    console.print(f"Downloaded: {cache.get('retrieved_at')}. Run refresh-odds for updated fixtures and quotes.")
+    return 0
+
+
+def refresh_results_command(args: argparse.Namespace) -> int:
+    api_key = os.getenv("THE_ODDS_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("THE_ODDS_API_KEY is not set")
+    count, quota = refresh_results(project_path("data", "raw"), project_path("data", "processed"), api_key)
+    Console().print(f"Cached {count} final game scores. Credits remaining: {quota.get('remaining')}. Run evaluate next.")
+    return 0
+
+
+def record_result_command(args: argparse.Namespace) -> int:
+    result = record_boxscore(args.run, args.nba_game_id, project_path("data", "raw"), project_path("data", "processed"))
+    Console().print(f"Recorded final NBA result and {len(result['players'])} player records. Run evaluate next.")
+    return 0
+
+
+def evaluate_command(args: argparse.Namespace) -> int:
+    report, target = evaluate_forward(project_path("outputs"), project_path("data", "processed", "results_nba.json"))
+    Console().print_json(json.dumps(report))
+    Console().print(f"Evaluation saved: {target}")
     return 0
 
 
@@ -171,7 +242,17 @@ def validate_command(args: argparse.Namespace) -> int:
 def simulate_command(args: argparse.Namespace) -> int:
     if args.home == args.away:
         raise ValueError("Home and away teams must differ")
+    if not math.isfinite(args.min_ev) or args.min_ev < 0:
+        raise ValueError("--min-ev must be a finite nonnegative number")
+    if not math.isfinite(args.max_odds_age_minutes) or args.max_odds_age_minutes <= 0:
+        raise ValueError("--max-odds-age-minutes must be a finite positive number")
     settings = _settings(args)
+    odds_cache = load_odds_cache(project_path("data", "processed")) if args.mode != "demo" else None
+    event = select_event(odds_cache or {}, args.home, args.away, args.event_id) if args.mode != "demo" else None
+    if (args.lineups or args.write_lineups) and event is None:
+        raise ValueError("Lineup files require an upcoming fixture. Run refresh-odds, then fixtures and select --event-id.")
+    if args.no_odds and args.event_id:
+        raise ValueError("--event-id requires odds analysis; remove --no-odds")
     source = "demo" if args.mode == "demo" else args.data_source
     provider = _provider(source, settings)
     assumptions: list[str] = []
@@ -256,7 +337,31 @@ def simulate_command(args: argparse.Namespace) -> int:
 
     home = profile(args.home)
     away = profile(args.away)
-    count = args.simulations or int(settings["simulation"]["default_count"])
+    if args.write_lineups:
+        write_lineup_template(args.write_lineups, (home, away), str(event["id"]))
+        Console().print(f"Lineup review file: {args.write_lineups}. Review all rows before using --lineups.")
+        Console().print("Set status to active/out/questionable; optional expected_minutes and starter. Add source and reviewed_at (ISO time with timezone).")
+        return 0
+    availability = {"reviewed": False, "reasons": ["Player availability has not been reviewed for this fixture"], "rows": []}
+    if args.lineups:
+        (home, away), availability = apply_lineups(args.lineups, (home, away), str(event["id"]))
+    readiness = list(availability["reasons"])
+    if args.model != "possession":
+        readiness.append("Score-only baseline does not model player availability")
+    latest_data = current_bundle.metadata if current_bundle is not None else baseline_bundle.metadata
+    data_age = age_minutes(latest_data.retrieved_at, datetime.now(timezone.utc))
+    if current_bundle is None or data_age is None or data_age > 48 * 60:
+        readiness.append("Refresh current-season NBA data (maximum age for review candidates: 48 hours)")
+    if current_enrichment is None or not current_enrichment.metadata.get("available"):
+        readiness.append("Refresh current-season enrichment for both teams")
+    else:
+        enrichment_age = age_minutes(current_enrichment.metadata.get("refreshed_at"), datetime.now(timezone.utc))
+        if enrichment_age is None or enrichment_age > 48 * 60:
+            readiness.append("Current-season enrichment is older than 48 hours or undated")
+    for team in (home, away):
+        if not team.data_evidence.get("rotation_games"):
+            readiness.append(f"No recent verified rotations for {team.abbreviation}")
+    count = args.simulations if args.simulations is not None else int(settings["simulation"]["default_count"])
     max_count = int(settings["simulation"].get("max_count", 10000))
     if count > max_count:
         raise ValueError(f"Simulation count is capped at {max_count:,}")
@@ -273,13 +378,19 @@ def simulate_command(args: argparse.Namespace) -> int:
     })
     market_comparison = None
     if not args.no_odds and args.mode != "demo":
-        odds_cache = load_odds_cache(project_path("data", "processed"))
-        if odds_cache:
+        if odds_cache and event:
             market_comparison = build_market_comparison(
                 odds_cache, home.abbreviation, away.abbreviation, summary, player_distributions,
+                event=event,
             )
             if market_comparison:
                 summary["market_comparison"] = market_comparison
+            summary["betting_analysis"] = build_edge_report(
+                odds_cache, event, games, home, away, readiness_reasons=readiness,
+                max_odds_age_minutes=args.max_odds_age_minutes, min_ev=args.min_ev,
+            )
+        else:
+            assumptions.append("No upcoming cached odds match. Run refresh-odds and fixtures to select an event.")
     metadata_assumptions = list(bundle.metadata.assumptions) + assumptions
     active_enrichment = current_enrichment if current_enrichment and current_enrichment.metadata.get("available") else baseline_enrichment
     if active_enrichment.metadata.get("available"):
@@ -295,7 +406,10 @@ def simulate_command(args: argparse.Namespace) -> int:
         "season": args.season, "simulations": count, "seed": args.seed, "model": args.model,
         "workers": workers,
         "model_version": settings["model_version"], "data_source": bundle.metadata.source,
-        "data_retrieved_at": bundle.metadata.retrieved_at, "is_demo": bundle.metadata.is_demo,
+        "data_retrieved_at": latest_data.retrieved_at, "is_demo": bundle.metadata.is_demo,
+        "availability": availability, "model_settings": settings,
+        "data_snapshots": [{"season": b.metadata.season, "retrieved_at": b.metadata.retrieved_at}
+                           for b in [baseline_bundle, *older_bundles, *([current_bundle] if current_bundle is not None else [])]],
         "historical_windows": windows or [args.season],
         "enrichment": active_enrichment.metadata,
         "market_data": ({
@@ -329,10 +443,12 @@ def main(argv: list[str] | None = None) -> None:
         code = {
             "refresh-data": refresh_command, "refresh-enrichment": refresh_enrichment_command,
             "refresh-odds": refresh_odds_command,
+            "fixtures": fixtures_command, "refresh-results": refresh_results_command,
+            "record-result": record_result_command, "evaluate": evaluate_command,
             "validate-data": validate_command,
             "simulate": simulate_command, "backtest": backtest_command,
         }[args.command](args)
-    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         Console(stderr=True).print(f"[red]Error:[/red] {exc}")
         raise SystemExit(2) from exc
     raise SystemExit(code)

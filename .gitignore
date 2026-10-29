@@ -13,6 +13,8 @@ profile.out
 data/cache/*
 data/raw/*
 data/processed/*
+data/manual/*.csv
+data/manual/*.json
 outputs/*
 !data/cache/.gitkeep
 !data/raw/.gitkeep

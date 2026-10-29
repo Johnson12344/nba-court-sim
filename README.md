@@ -22,7 +22,7 @@ The program keeps real, user-supplied, and synthetic data paths separate. It nev
 - Walk-forward team-score backtesting that uses only rows strictly earlier than each holdout game.
 - Automated tests for data, cache behavior, shrinkage, probabilities, minutes, event accounting, overtime, reproducibility, demo labelling, and future-data leakage.
 
-This is an analytics simulator, not a betting system. More simulations reduce Monte Carlo sampling noise; they do not repair weak data or assumptions.
+The simulator now supports upcoming fixtures, reviewed availability/minutes, bookmaker-specific probabilities and expected value, and evaluation of saved pregame predictions. Follow the [upcoming-game workflow](BETTING_WORKFLOW.md) for CMD commands and the limitations of each step. It does not place bets or claim a proven betting advantage. More simulations reduce Monte Carlo sampling noise; they do not repair weak data or assumptions.
 
 ## Windows setup
 
@@ -100,7 +100,7 @@ python -m nba_sim refresh-enrichment --season 2025-26 --teams OKC SAS --games-pe
 python -m nba_sim refresh-enrichment --season 2026-27 --teams OKC SAS --games-per-team 10 --rotation-games 3
 ```
 
-`refresh-data` caches aggregates. `refresh-enrichment` separately caches player shot charts, the selected teams' recent PlayByPlayV3 games, and recent verified box-score rotations. Existing per-game files are reused unless `--force` is supplied. Increase `--games-per-team` up to 82 for deeper PBP coverage; start with 10–20 while developing.
+`refresh-data` caches aggregates. `refresh-enrichment` separately caches player shot charts, the selected teams' recent PlayByPlayV3 games, and recent verified box-score rotations. The league game log and season shot charts are refreshed on every call; existing per-game files are reused unless `--force` is supplied. Increase `--games-per-team` up to 82 for deeper PBP coverage; start with 10–20 while developing.
 
 Then run any cached matchup by abbreviation:
 

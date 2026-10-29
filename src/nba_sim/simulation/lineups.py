@@ -13,6 +13,13 @@ def sample_minute_targets(team: TeamProfile, rng: np.random.Generator, uncertain
     allocated = np.zeros_like(noisy)
     remaining = np.ones(len(noisy), dtype=bool)
     target = 240.0
+    # Explicit targets survive both historical blending and random minute sampling.
+    fixed = team.data_evidence.get("fixed_minutes", {})
+    for index, player in enumerate(team.players):
+        if player.player_id in fixed:
+            allocated[index] = float(fixed[player.player_id])
+            remaining[index] = False
+            target -= allocated[index]
     while remaining.any() and target > 1e-9:
         weights = noisy[remaining]
         shares = target * weights / weights.sum()

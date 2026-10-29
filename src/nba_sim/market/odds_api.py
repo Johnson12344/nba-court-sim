@@ -96,6 +96,7 @@ def refresh_nba_odds(
     home: str | None = None,
     away: str | None = None,
     include_player_props: bool = False,
+    event_id: str | None = None,
     timeout: int = 30,
 ) -> dict[str, Any]:
     if not api_key.strip():
@@ -104,6 +105,8 @@ def refresh_nba_odds(
         raise ValueError("Provide both --home and --away, or neither.")
     if include_player_props and not (home and away):
         raise ValueError("--include-player-props requires --home and --away.")
+    if event_id and not (home and away):
+        raise ValueError("--event-id requires --home and --away.")
 
     params = {
         "regions": regions,
@@ -117,7 +120,8 @@ def refresh_nba_odds(
     if not isinstance(events, list):
         raise OddsApiError("The Odds API returned an unexpected NBA odds format.")
 
-    selected = find_matchup(events, home, away) if home and away else None
+    from nba_sim.market.events import select_event
+    selected = select_event({"events": events}, home, away, event_id) if home and away else None
     props_quota: dict[str, int | None] | None = None
     if include_player_props:
         if selected is None:
@@ -133,6 +137,8 @@ def refresh_nba_odds(
         props, props_quota = _request(
             f"sports/{NBA_SPORT_KEY}/events/{selected['id']}/odds", api_key, prop_params, timeout,
         )
+        if not isinstance(props, dict) or str(props.get("id")) != str(selected["id"]):
+            raise OddsApiError("Player odds response does not match the selected event.")
         selected["player_prop_bookmakers"] = props.get("bookmakers", []) if isinstance(props, dict) else []
 
     retrieved_at = datetime.now(timezone.utc).isoformat()
@@ -268,8 +274,10 @@ def build_market_comparison(
     away_abbreviation: str,
     summary: dict[str, Any],
     players: pd.DataFrame,
+    *,
+    event: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    event = find_matchup(cache.get("events", []), home_abbreviation, away_abbreviation)
+    event = event or find_matchup(cache.get("events", []), home_abbreviation, away_abbreviation)
     if event is None:
         return None
     consensus = _game_consensus(event)

@@ -153,19 +153,19 @@ class NbaStatsProvider(DataProvider):
         pause = float(self.settings["data"]["request_pause_seconds"])
         key = self._key(season)
         game_log_path = self.processed_root / f"game_log_{key}.csv"
-        if force or not game_log_path.exists():
-            if progress:
-                progress("Downloading league game log")
-            raw_games = self._retry(
-                lambda: leaguegamelog.LeagueGameLog(
-                    season=season, season_type_all_star="Regular Season",
-                    player_or_team_abbreviation="T", timeout=timeout,
-                ).get_data_frames()[0],
-                "league game log",
-            )
-            self._save_raw("league_game_log", season, raw_games)
-            normalize_columns(raw_games).to_csv(game_log_path, index=False)
-            time.sleep(pause)
+        # These season-wide observations change; only completed per-game files are reusable.
+        if progress:
+            progress("Downloading league game log")
+        raw_games = self._retry(
+            lambda: leaguegamelog.LeagueGameLog(
+                season=season, season_type_all_star="Regular Season",
+                player_or_team_abbreviation="T", timeout=timeout,
+            ).get_data_frames()[0],
+            "league game log",
+        )
+        self._save_raw("league_game_log", season, raw_games)
+        normalize_columns(raw_games).to_csv(game_log_path, index=False)
+        time.sleep(pause)
         game_log = pd.read_csv(game_log_path, dtype={"game_id": str})
         game_log["team_abbreviation"] = game_log.team_abbreviation.astype(str).str.upper()
         selected_rows: list[pd.DataFrame] = []
@@ -182,21 +182,20 @@ class NbaStatsProvider(DataProvider):
         }
         for abbreviation in requested:
             shot_path = self.processed_root / f"shots_{key}_{abbreviation}.csv"
-            if force or not shot_path.exists():
-                if progress:
-                    progress(f"Downloading {abbreviation} player shot chart")
-                raw_shots = self._retry(
-                    lambda abbr=abbreviation: shotchartdetail.ShotChartDetail(
-                        team_id=team_ids[abbr], player_id=0, context_measure_simple="FGA",
-                        season_nullable=season, season_type_all_star="Regular Season", timeout=timeout,
-                    ).get_data_frames()[0],
-                    f"{abbreviation} shot chart",
-                )
-                self._save_raw(f"shot_chart_{abbreviation}", season, raw_shots)
-                shots = normalize_columns(raw_shots)
-                shots["team_abbreviation"] = abbreviation
-                shots.to_csv(shot_path, index=False)
-                time.sleep(pause)
+            if progress:
+                progress(f"Downloading {abbreviation} player shot chart")
+            raw_shots = self._retry(
+                lambda abbr=abbreviation: shotchartdetail.ShotChartDetail(
+                    team_id=team_ids[abbr], player_id=0, context_measure_simple="FGA",
+                    season_nullable=season, season_type_all_star="Regular Season", timeout=timeout,
+                ).get_data_frames()[0],
+                f"{abbreviation} shot chart",
+            )
+            self._save_raw(f"shot_chart_{abbreviation}", season, raw_shots)
+            shots = normalize_columns(raw_shots)
+            shots["team_abbreviation"] = abbreviation
+            shots.to_csv(shot_path, index=False)
+            time.sleep(pause)
 
         for game_id in game_ids:
             pbp_path = self.processed_root / f"pbp_{key}_{game_id}.csv"
@@ -228,10 +227,16 @@ class NbaStatsProvider(DataProvider):
                 self._save_raw(f"box_score_{game_id}", season, raw_box)
                 normalize_columns(raw_box).to_csv(box_path, index=False)
                 time.sleep(pause)
+        manifest_path = self.processed_root / f"enrichment_{key}.json"
+        previous = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        refreshed_at = datetime.now(timezone.utc).isoformat()
+        team_refreshes = previous.get("team_refreshes", {})
+        team_refreshes.update({team: refreshed_at for team in requested})
         manifest = {
             "season": season, "teams": requested, "games_per_team": games_per_team,
             "rotation_games": rotation_games, "game_ids": game_ids,
-            "rotation_game_ids": sorted(rotation_ids), "refreshed_at": datetime.now(timezone.utc).isoformat(),
+            "rotation_game_ids": sorted(rotation_ids), "refreshed_at": refreshed_at,
+            "team_refreshes": team_refreshes,
             "sources": ["NBA.com ShotChartDetail", "NBA.com PlayByPlayV3", "NBA.com BoxScoreTraditionalV3"],
             "limitations": ["PlayByPlayV3 does not provide an observed on-ball defender for every shot."],
         }
@@ -255,13 +260,19 @@ class NbaStatsProvider(DataProvider):
         pbp = pd.concat(pbp_frames, ignore_index=True) if pbp_frames else pd.DataFrame()
         rotations = pd.concat(box_frames, ignore_index=True) if box_frames else pd.DataFrame()
         if not pbp.empty and "team_tricode" in pbp:
-            pbp = pbp.loc[pbp.team_tricode.astype(str).str.upper().isin(requested) | pbp.team_tricode.isna()].copy()
+            # Neutral events from unrelated cached games must not imply matchup coverage.
+            pbp = pbp.loc[pbp.team_tricode.astype(str).str.upper().isin(requested)].copy()
         if not rotations.empty and "team_tricode" in rotations:
             rotations = rotations.loc[rotations.team_tricode.astype(str).str.upper().isin(requested)].copy()
         manifest_path = self.processed_root / f"enrichment_{key}.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        team_dates = manifest.get("team_refreshes", {})
+        refreshed_at = min(team_dates[t] for t in requested) if requested and all(t in team_dates for t in requested) else (
+            manifest.get("refreshed_at") if requested <= set(manifest.get("teams", [])) else None
+        )
         metadata = {
             **manifest,
+            "refreshed_at": refreshed_at,
             "available": not shots.empty or not pbp.empty or not rotations.empty,
             "shot_rows": len(shots), "play_by_play_rows": len(pbp), "rotation_rows": len(rotations),
         }

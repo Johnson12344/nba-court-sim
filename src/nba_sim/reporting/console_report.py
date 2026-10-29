@@ -80,6 +80,30 @@ def render_report(
                     f"{row['model_minus_line']:+.1f}", str(row["sportsbook_count"]),
                 )
             console.print(props_table)
+    analysis = summary.get("betting_analysis")
+    if analysis:
+        console.print("[bold]Apparent betting edges — model probabilities are not yet validated.[/bold]")
+        for reason in analysis["readiness_reasons"]:
+            console.print(f"Needs review: {reason}", style="yellow", markup=False)
+        offers = analysis["offers"]
+        candidates = [row for row in offers if row["review_candidate"]]
+        display = candidates[:12] if candidates else offers[:8]
+        table = Table(title="Review candidates" if candidates else "Price comparisons — no offers passed all review checks")
+        for column in ("Book", "Market / selection", "Odds", "Win %", "Push %", "EV %", "MC lower %", "Status"):
+            table.add_column(column)
+        for row in display:
+            selection = f"{row['market']} {row.get('player') or row.get('team') or ''} {row['selection']}"
+            if row["line"] is not None:
+                selection += f" {row['line']:+g}"
+            table.add_row(row["bookmaker"], selection, f"{row['decimal_odds']:.2f}",
+                          f"{100 * row['win_probability']:.1f}", f"{100 * row['push_probability']:.1f}",
+                          f"{100 * row['expected_profit_per_unit']:+.1f}", f"{100 * row['mc_lower_profit_per_unit']:+.1f}",
+                          "Review" if row["review_candidate"] else "Blocked" if row["blockers"] else "Below threshold")
+        console.print(table)
+        console.print("EV is modeled profit per 100 units staked. MC lower bounds cover simulation noise only, not model error. Review candidates are not proven profitable bets.")
+        console.print(f"{len(candidates)} review candidates / {len(offers)} quotes. All offers and blockers are saved in market_probabilities.csv.")
+        if analysis["skipped"]:
+            console.print(f"Skipped {len(analysis['skipped'])} types of unmatched/unsupported offers; details in betting_analysis.json.")
     if not players.empty:
         leaders = players.loc[players.stat == "points"].sort_values("mean", ascending=False).head(10)
         ptable = Table(title="Player point distributions")
