@@ -33,6 +33,10 @@ class OddsApiError(RuntimeError):
     """A safe, API-key-free error from The Odds API."""
 
 
+class UpcomingEventUnavailable(OddsApiError):
+    """No upcoming priced fixture was found for the requested teams."""
+
+
 def _team_name(value: str) -> str:
     return NBA_TEAM_NAMES.get(value.strip().upper(), value.strip())
 
@@ -125,7 +129,7 @@ def refresh_nba_odds(
     props_quota: dict[str, int | None] | None = None
     if include_player_props:
         if selected is None:
-            raise OddsApiError(f"No upcoming {away} at {home} event with sportsbook odds was found.")
+            raise UpcomingEventUnavailable(f"No upcoming {away} at {home} event with sportsbook odds was found.")
         prop_params = {
             "regions": regions,
             "markets": ",".join(PLAYER_MARKETS),

@@ -280,7 +280,7 @@ def test_forward_evaluation_deduplicates_and_rejects_postgame(tmp_path, demo_pro
     assert report_two == report_one
 
 
-def test_cli_lineup_to_export_workflow(tmp_path, monkeypatch):
+def test_cli_lineup_to_export_workflow(tmp_path, monkeypatch, capsys):
     import nba_sim.cli as cli
     from nba_sim.data.demo_provider import DemoProvider
     from nba_sim.config import load_settings
@@ -308,7 +308,11 @@ def test_cli_lineup_to_export_workflow(tmp_path, monkeypatch):
     excluded = rows[0]["player_id"]
     rows[0]["status"] = "out"
     save_rows(path, rows)
-    assert cli.simulate_command(parser.parse_args([*common, "--lineups", str(path), "--simulations", "2", "--workers", "1"])) == 0
+    assert cli.analyze_command(parser.parse_args(["analyze", *common[1:], "--cached", "--lineups", str(path), "--simulations", "2", "--workers", "1"])) == 0
+    printed = capsys.readouterr().out
+    assert "Combined total:" in printed
+    assert "Player projections" in printed
+    assert "Reb" in printed and "Ast" in printed
     run = next((tmp_path / "outputs").iterdir())
     assert (run / "market_probabilities.csv").exists()
     analysis = json.loads((run / "betting_analysis.json").read_text())

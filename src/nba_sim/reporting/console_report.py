@@ -35,6 +35,15 @@ def render_report(
         score = data["score"]
         table.add_row(team.abbreviation, f"{score['mean']:.1f}", f"{score['median']:.1f}", f"{score['std_dev']:.1f}", f"{score['p10']:.0f}", f"{score['p90']:.0f}", f"{100*data['win_rate']:.1f}")
     console.print(table)
+    total = summary.get("game_total")
+    if total:
+        console.print(Panel.fit(
+            f"[bold]Projected score: {away.abbreviation} {summary['teams'][away.abbreviation]['score']['mean']:.1f}"
+            f" — {home.abbreviation} {summary['teams'][home.abbreviation]['score']['mean']:.1f}[/bold]\n"
+            f"[bold]Combined total: {total['mean']:.1f} points[/bold]\n"
+            f"Median total: {total['median']:.1f} | Middle 80% of simulated totals: {total['p10']:.0f}–{total['p90']:.0f}",
+            title="Score projection (simulation averages)",
+        ))
     market = summary.get("market_comparison")
     if market:
         market_table = Table(title="Sportsbook market comparison (context only, not a recommendation)")
@@ -105,12 +114,17 @@ def render_report(
         if analysis["skipped"]:
             console.print(f"Skipped {len(analysis['skipped'])} types of unmatched/unsupported offers; details in betting_analysis.json.")
     if not players.empty:
-        leaders = players.loc[players.stat == "points"].sort_values("mean", ascending=False).head(10)
-        ptable = Table(title="Player point distributions")
-        for column in ("Player", "Team", "Mean", "Median", "P10–P90", "Exp min", "Source GP"):
+        leaders = players.loc[players.stat == "points"].sort_values(["team", "mean"], ascending=[True, False])
+        averages = {(r.team, r.player_id, r.stat): r.mean for r in players.itertuples()}
+        ptable = Table(title="Player projections — all modeled players (simulation averages)")
+        for column in ("Player", "Team", "Min", "Points", "Reb", "Ast", "Points P10–P90"):
             ptable.add_column(column)
         for row in leaders.itertuples():
-            ptable.add_row(row.player_name, row.team, f"{row.mean:.1f}", f"{row.median:.1f}", f"{row.p10:.0f}–{row.p90:.0f}", f"{row.expected_minutes:.1f}", str(row.source_games))
+            def average(stat):
+                value = averages.get((row.team, row.player_id, stat))
+                return f"{value:.1f}" if value is not None else "—"
+            ptable.add_row(row.player_name, row.team, average("minutes"), f"{row.mean:.1f}", average("rebounds"),
+                           average("assists"), f"{row.p10:.0f}–{row.p90:.0f}")
         console.print(ptable)
     quarters = " | ".join(
         f"{'Q' if q['period'] <= 4 else 'OT'}{q['period'] if q['period'] <= 4 else q['period']-4}: {q['away']}-{q['home']}"

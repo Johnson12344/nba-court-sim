@@ -111,6 +111,14 @@ python -m nba_sim simulate --home BOS --away LAL --season 2026-27 --simulations 
 
 ## Optional sportsbook market comparison
 
+For a single command that updates inputs and prints the full matchup report, use:
+
+```cmd
+.venv\Scripts\python.exe -m nba_sim analyze --home NOP --away SAC --season 2026-27
+```
+
+It reuses recent downloads, fetches missing/stale data and available odds/player props, and runs 5,000 simulations. Add `--cached` to use only the data already downloaded. See the [full workflow](BETTING_WORKFLOW.md) for availability review and other options. The report includes the combined total and player points, rebounds, assists, and minutes.
+
 Create an API key at [The Odds API](https://the-odds-api.com/). Keep the key outside the project files. In Command Prompt, set it for the current terminal window and download current NBA lines:
 
 ```cmd

@@ -4,6 +4,30 @@ This workflow estimates probabilities for upcoming NBA fixtures and compares the
 
 All commands below are for **CMD**, opened in the project folder. On another PC, first run `git pull` and `.venv\Scripts\python.exe -m pip install -e ".[dev]"` to update the program.
 
+## One command for the full report
+
+With your Odds API key already set in CMD, run:
+
+```cmd
+.venv\Scripts\python.exe -m nba_sim analyze --home NOP --away SAC --season 2026-27
+```
+
+Replace the teams with your upcoming matchup. This downloads any missing baseline statistics, refreshes current statistics and matchup enrichment when older than six hours, downloads game odds and available player props, then runs 5,000 simulations. It reuses matching odds downloaded within 15 minutes and reuses the basketball data you just downloaded. New odds requests consume API credits. Without a key, it still produces the statistics report and uses cached odds if available, with freshness checks unchanged.
+
+The combined report shows each team's projected score and win probability, **combined game total with its range**, every modeled player's points/rebounds/assists/minutes, available odds comparisons, and the review checks. The full files are saved together under `outputs`.
+
+Useful options on the same command:
+
+- `--cached`: immediately simulate with downloaded data/odds; no network requests or API credits.
+- `--refresh`: force current statistics, enrichment, and odds downloads.
+- `--no-player-props`: download game odds only to conserve credits.
+- `--lineups data\manual\nop-sac.csv`: apply a review file you have already prepared.
+- `--simulations 1000`: run fewer simulations for a quicker report.
+
+Availability is not automatically confirmed by this command. Without a reviewed lineup, projections still appear and unreviewed availability remains flagged. A failed NBA download stops the refresh workflow rather than treating old data as fresh; use `--cached` explicitly if you want to proceed with existing inputs. If no upcoming odds event matches, it shows score/player projections with a clear notice and no betting comparison. An explicit event ID or fixture-specific lineup file still requires a matching upcoming event.
+
+The steps below are available when you want to manage the downloads and lineup review separately.
+
 ## 1. Find a fixture
 
 Set your key in the terminal if needed, then download odds and list upcoming games:

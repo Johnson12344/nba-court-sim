@@ -75,5 +75,6 @@ def create_summary(games: list[SimulatedGame], home: TeamProfile, away: TeamProf
             "shot_location_source": profile.shot_location_source,
         })
     players = pd.DataFrame(player_rows)
-    return {"teams": team_summary}, scores, players
+    return {"teams": team_summary, "game_total": _distribution(scores.total_score.tolist()),
+            "home_margin": _distribution(scores.home_margin.tolist())}, scores, players
 
