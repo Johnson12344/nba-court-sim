@@ -20,10 +20,12 @@ from nba_sim.config import load_settings, project_path
 from nba_sim.data.csv_provider import CsvProvider
 from nba_sim.data.demo_provider import DemoProvider
 from nba_sim.data.nba_stats_provider import NbaStatsProvider
+from nba_sim.data.injury_reports import InjuryReportError, load_injury_report, refresh_injury_report
 from nba_sim.data.validation import validate_data
 from nba_sim.evaluation.backtest import walk_forward_backtest
 from nba_sim.evaluation.forward import evaluate_forward, record_boxscore, refresh_results
 from nba_sim.features.availability import apply_lineups, write_lineup_template
+from nba_sim.features.automatic_availability import apply_official_report
 from nba_sim.features.profile_builder import build_team_profile
 from nba_sim.features.blending import blend_team_profiles
 from nba_sim.features.historical_weights import current_season_weight
@@ -439,6 +441,19 @@ def simulate_command(args: argparse.Namespace) -> int:
     availability = {"reviewed": False, "reasons": ["Player availability has not been reviewed for this fixture"], "rows": []}
     if args.lineups:
         (home, away), availability = apply_lineups(args.lineups, (home, away), str(event["id"]))
+    elif args.mode != "demo":
+        injury_report = load_injury_report(project_path("data", "processed"), args.season)
+        injury_error = None
+        if args.command == "analyze" and not args.cached and event:
+            Console().print("Checking the official NBA injury report (no API key or Odds API credits needed).")
+            try:
+                injury_report = refresh_injury_report(project_path("data", "raw"), project_path("data", "processed"),
+                                                      args.season, force=args.refresh)
+            except (InjuryReportError, OSError) as exc:
+                injury_error = f"Automatic injury refresh failed: {exc}"
+                Console().print(injury_error, style="yellow", markup=False)
+        (home, away), availability = apply_official_report((home, away), event, injury_report,
+                                                          refresh_error=injury_error)
     readiness = list(availability["reasons"])
     if args.model != "possession":
         readiness.append("Score-only baseline does not model player availability")

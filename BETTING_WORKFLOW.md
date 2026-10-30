@@ -1,6 +1,6 @@
 # Upcoming-game analysis
 
-This workflow estimates probabilities for upcoming NBA fixtures and compares them with actual bookmaker prices. An apparent positive expected value (EV) is a model estimate, not evidence that the model is profitable. No bets are placed. Player availability is reviewed manually; the program does not automatically read injury reports.
+This workflow estimates probabilities for upcoming NBA fixtures and compares them with actual bookmaker prices. An apparent positive expected value (EV) is a model estimate, not evidence that the model is profitable. No bets are placed. Player availability is imported automatically from the official NBA injury report; no per-player spreadsheet is required.
 
 All commands below are for **CMD**, opened in the project folder. On another PC, first run `git pull` and `.venv\Scripts\python.exe -m pip install -e ".[dev]"` to update the program.
 
@@ -12,21 +12,25 @@ With your Odds API key already set in CMD, run:
 .venv\Scripts\python.exe -m nba_sim analyze --home NOP --away SAC --season 2026-27
 ```
 
-Replace the teams with your upcoming matchup. This downloads any missing baseline statistics, refreshes current statistics and matchup enrichment when older than six hours, downloads game odds and available player props, then runs 5,000 simulations. It reuses matching odds downloaded within 15 minutes and reuses the basketball data you just downloaded. New odds requests consume API credits. Without a key, it still produces the statistics report and uses cached odds if available, with freshness checks unchanged.
+Replace the teams with your upcoming matchup. This downloads any missing baseline statistics, refreshes current statistics and matchup enrichment when older than six hours, downloads game odds and available player props, checks the official NBA injury report, then runs 5,000 simulations. It reuses matching odds downloaded within 15 minutes and injury reports checked within five minutes. New odds requests consume API credits; injury reports require no key or credits. Without an odds key, it still produces projections and uses cached odds/fixtures if available, with freshness checks unchanged.
 
 The combined report shows each team's projected score and win probability, **combined game total with its range**, every modeled player's points/rebounds/assists/minutes, available odds comparisons, and the review checks. The full files are saved together under `outputs`.
 
 Useful options on the same command:
 
-- `--cached`: immediately simulate with downloaded data/odds; no network requests or API credits.
-- `--refresh`: force current statistics, enrichment, and odds downloads.
+- `--cached`: simulate with downloaded data, odds and injury reports; no network requests or API credits.
+- `--refresh`: force current statistics, enrichment, odds and injury-report downloads.
 - `--no-player-props`: download game odds only to conserve credits.
-- `--lineups data\manual\nop-sac.csv`: apply a review file you have already prepared.
+- `--lineups data\manual\nop-sac.csv`: optional advanced override, replacing the automatic injury report with your reviewed CSV.
 - `--simulations 1000`: run fewer simulations for a quicker report.
 
-Availability is not automatically confirmed by this command. Without a reviewed lineup, projections still appear and unreviewed availability remains flagged. A failed NBA download stops the refresh workflow rather than treating old data as fresh; use `--cached` explicitly if you want to proceed with existing inputs. If no upcoming odds event matches, it shows score/player projections with a clear notice and no betting comparison. An explicit event ID or fixture-specific lineup file still requires a matching upcoming event.
+The report prints excluded players, availability warnings and publication/check times. Players marked **out** are removed after historical blending, and their minutes are redistributed among the remaining modeled players. Probable, questionable and doubtful players remain in a clearly labeled **playing scenario** and block review candidates until resolved. A player absent from a submitted team report is **not listed**, not confirmed active. Expected minutes and starting positions remain model estimates.
 
-The steps below are available when you want to manage the downloads and lineup review separately.
+Reports are matched to the fixture's Eastern-time game date and home/away teams, including games that fall on the following date in Lagos. Unsubmitted team reports, name mismatches, missing fixtures and reports older than 12 hours remain explicit warnings. A fresh download never resets an old report's publication age. If the injury service fails, the program can use a still-fresh cached report with a refresh warning; otherwise it shows projections with unverified availability. It never asks you to fill a CSV just to continue. Fewer than five modeled players remaining after exclusions stops the simulation because it cannot form a valid rotation.
+
+A failed aggregate-statistics/enrichment download stops the refresh workflow; use `--cached` explicitly to proceed with existing inputs. If no upcoming odds event matches, projections remain available without a betting comparison or automatic fixture-specific availability. An explicit event ID or manual lineup file still requires a matching upcoming event. `simulate` alone uses existing caches and does not fetch a new injury report; use `analyze` for the automatic process.
+
+The steps below are optional when you want to manage downloads or advanced overrides separately. The single `analyze` command above handles the normal workflow.
 
 ## 1. Find a fixture
 
@@ -59,7 +63,11 @@ Before analysing your matchup, update the current season and the teams' detailed
 
 These NBA.com downloads do not use Odds API credits. Enrichment refresh now downloads the latest season game log and shot charts each time; completed per-game play-by-play and box scores are reused unless `--force` is supplied. Availability of NBA.com endpoints can vary; do not interpret a failed refresh as fresh data.
 
-## 3. Review availability and minutes
+## 3. Automatic availability; optional manual overrides
+
+Normally, use `analyze` and let the [official NBA injury report](https://official.nba.com/nba-injury-report-2026-27-season/) supply statuses, source URLs and timestamps. PDFs are preserved under `data/raw`, and parsed reports are cached under `data/processed`. Each run saves the statuses it actually used in `run_metadata.json`. The injury report does not supply expected minutes or confirm starters.
+
+The following CSV procedure is **optional**, for users who want to supply their own sourced availability/minute targets instead of the automatic import.
 
 Generate a CSV containing the players currently modeled:
 
@@ -90,8 +98,7 @@ The availability review must be within 12 hours for review candidates. The progr
 ## 4. Get current prices and run
 
 ```cmd
-.venv\Scripts\python.exe -m nba_sim refresh-odds --home NOP --away SAC --event-id EVENT_ID --include-player-props
-.venv\Scripts\python.exe -m nba_sim simulate --home NOP --away SAC --season 2026-27 --event-id EVENT_ID --lineups data\manual\nop-sac.csv --simulations 5000 --seed 42
+.venv\Scripts\python.exe -m nba_sim analyze --home NOP --away SAC --season 2026-27 --event-id EVENT_ID --simulations 5000 --seed 42
 ```
 
 Player props use additional credits. To restrict the downloaded prices to bookmakers you can use, add `--bookmakers bookmaker_key` to `refresh-odds`; use the provider's bookmaker key, not a display name. Changing bookmaker or region filters changes the available markets. A normal odds refresh replaces the odds cache, so a later refresh without player props will remove the previous prop quotes.
@@ -108,7 +115,7 @@ A quote can appear as a **review candidate** only when:
 
 - The fixture has not started and is within the next 24 hours.
 - Both the downloaded cache and the quote's own timestamp are no older than 60 minutes.
-- All modeled players have a sourced availability review within 12 hours, with no unresolved status.
+- Both teams have a matching submitted official injury report published within 12 hours, with no unresolved statuses/name matches; alternatively, all modeled players have a sourced manual review within 12 hours.
 - Current-season aggregate data and enrichment are no older than 48 hours, with rotation coverage for both teams.
 - At least 500 simulations were run using the possession model.
 - Modeled EV is at least 2%, and a conservative lower bound for simulation sampling error is above zero.
@@ -121,10 +128,10 @@ Open the new timestamped folder under `outputs`:
 
 - `market_probabilities.csv`: every supported quote, probability, price, EV, and any blockers.
 - `betting_analysis.json`: the full analysis, skipped offers, thresholds, and assumptions.
-- `run_metadata.json`: event, data timestamps, settings, and a snapshot of your lineup review.
+- `run_metadata.json`: event, data timestamps, settings, and a snapshot of the automatic injury import or optional manual review.
 - Existing score, player-distribution, and representative-game files remain available.
 
-No matching upcoming event means no betting analysis. Unknown/excluded/ambiguous player names are skipped instead of assigned zero statistics. A simulation remains runnable without a reviewed lineup, but its offers will not pass the review checks.
+No matching upcoming event means no betting analysis. Unknown/excluded/ambiguous player names are skipped instead of assigned zero statistics. A simulation remains runnable when availability is unverified, but its offers will not pass the review checks. Automatic injury handling improves input coverage; it does not establish profitable predictions.
 
 ## 6. Measure whether the predictions actually help
 

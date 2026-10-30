@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nba-local-sim"
-version = "0.4.1"
+version = "0.5.0"
 description = "Transparent local NBA possession simulation and analytics"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,8 @@ dependencies = [
   "nba_api>=1.4,<2",
   "rich>=13.7,<15",
   "PyYAML>=6.0,<7",
+  "pypdf>=6.1,<7",
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

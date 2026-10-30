@@ -27,6 +27,16 @@ def render_report(
         f"Source: {metadata['data_source']} | model {metadata['model_version']}",
         title=title, border_style="yellow" if metadata["is_demo"] else "blue",
     ))
+    availability = metadata.get("availability", {})
+    if availability.get("mode") == "automatic":
+        console.print("[bold]Automatic player availability[/bold]")
+        if availability.get("source"):
+            console.print(f"NBA report published: {availability.get('published_at')} | Checked: {availability.get('retrieved_at')}", markup=False)
+        excluded = availability.get("excluded", [])
+        console.print("Excluded (out): " + ("; ".join(excluded) if excluded else "none applied"), markup=False)
+        for reason in availability.get("reasons", []):
+            console.print(f"Availability warning: {reason}", style="yellow", markup=False)
+        console.print(availability["note"], style="dim", markup=False)
     table = Table(title="Team scoring distributions (simulated, not guaranteed)")
     for column in ("Team", "Mean", "Median", "SD", "P10", "P90", "Win %"):
         table.add_column(column, justify="right" if column != "Team" else "left")
@@ -93,6 +103,8 @@ def render_report(
     if analysis:
         console.print("[bold]Apparent betting edges — model probabilities are not yet validated.[/bold]")
         for reason in analysis["readiness_reasons"]:
+            if availability.get("mode") == "automatic" and reason in availability.get("reasons", []):
+                continue  # Already displayed above, including runs without odds.
             console.print(f"Needs review: {reason}", style="yellow", markup=False)
         offers = analysis["offers"]
         candidates = [row for row in offers if row["review_candidate"]]

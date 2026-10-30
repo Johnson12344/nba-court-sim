@@ -8,6 +8,7 @@ The program keeps real, user-supplied, and synthetic data paths separate. It nev
 
 - NBA.com aggregate team, advanced-team (including pace), and player refresh through `nba_api`.
 - Explicit NBA.com enrichment refresh for `ShotChartDetail`, `PlayByPlayV3`, and recent `BoxScoreTraditionalV3` rotations.
+- Automatic official NBA injury-report import with `analyze`: fixture/date matching, out-player exclusions, minute redistribution, publication timestamps and unresolved-status warnings. No injury API key or manual player spreadsheet required.
 - Timestamped raw JSON preservation plus normalized local CSV caches.
 - A documented manual-CSV provider for API outages or curated inputs.
 - Validation for schemas, IDs, duplicates, negative values, impossible makes/attempts, missing teams, and empty seasons.
@@ -22,7 +23,7 @@ The program keeps real, user-supplied, and synthetic data paths separate. It nev
 - Walk-forward team-score backtesting that uses only rows strictly earlier than each holdout game.
 - Automated tests for data, cache behavior, shrinkage, probabilities, minutes, event accounting, overtime, reproducibility, demo labelling, and future-data leakage.
 
-The simulator now supports upcoming fixtures, reviewed availability/minutes, bookmaker-specific probabilities and expected value, and evaluation of saved pregame predictions. Follow the [upcoming-game workflow](BETTING_WORKFLOW.md) for CMD commands and the limitations of each step. It does not place bets or claim a proven betting advantage. More simulations reduce Monte Carlo sampling noise; they do not repair weak data or assumptions.
+The simulator now supports upcoming fixtures, automatic injury availability and optional reviewed minute overrides, bookmaker-specific probabilities and expected value, and evaluation of saved pregame predictions. Follow the [upcoming-game workflow](BETTING_WORKFLOW.md) for CMD commands and the limitations of each step. It does not place bets or claim a proven betting advantage. More simulations reduce Monte Carlo sampling noise; they do not repair weak data or assumptions.
 
 ## Windows setup
 
@@ -70,12 +71,11 @@ The repository excludes downloaded data, generated reports, and API keys. For re
 .\.venv\Scripts\python.exe -m nba_sim refresh-data --season 2026-27
 ```
 
-If downloading fresh data, follow the enrichment commands below to add shot charts, play-by-play, and recent rotations for your teams. Set the odds key separately in the new PC's terminal, refresh the matchup's lines, and run:
+For an automatic refresh of statistics, enrichment, odds and injury reports followed by the full report, set the odds key in the new PC's terminal and run:
 
 ```powershell
 $env:THE_ODDS_API_KEY="your_key_here"
-.\.venv\Scripts\python.exe -m nba_sim refresh-odds --home OKC --away SAS --include-player-props
-.\.venv\Scripts\python.exe -m nba_sim simulate --home OKC --away SAS --season 2026-27 --simulations 5000 --seed 42
+.\.venv\Scripts\python.exe -m nba_sim analyze --home OKC --away SAS --season 2026-27 --simulations 5000 --seed 42
 ```
 
 Replace the matchup as needed. Keep the key out of source files; the application reads it from the terminal environment, not a `.env` file. Set it again when opening a new terminal. Copying the existing NBA cache preserves its original data freshness; refresh it when needed. Do not copy `.venv` between PCs.
@@ -117,7 +117,7 @@ For a single command that updates inputs and prints the full matchup report, use
 .venv\Scripts\python.exe -m nba_sim analyze --home NOP --away SAC --season 2026-27
 ```
 
-It reuses recent downloads, fetches missing/stale data and available odds/player props, and runs 5,000 simulations. Add `--cached` to use only the data already downloaded. See the [full workflow](BETTING_WORKFLOW.md) for availability review and other options. The report includes the combined total and player points, rebounds, assists, and minutes.
+It reuses recent downloads, fetches missing/stale data and available odds/player props, imports the official injury report and runs 5,000 simulations. Injuries need no extra API key and no per-player CSV editing. Add `--cached` to use only downloaded inputs. See the [full workflow](BETTING_WORKFLOW.md) for status handling and options. The report includes the combined total and player points, rebounds, assists, and minutes.
 
 Create an API key at [The Odds API](https://the-odds-api.com/). Keep the key outside the project files. In Command Prompt, set it for the current terminal window and download current NBA lines:
 
@@ -207,7 +207,7 @@ Observed aggregate fields drive pace, free throws, rebounds, turnovers and stabl
 
 NBA.com PlayByPlayV3 and ShotChartDetail do not establish the on-ball defender on every shot, screen actions, switches, or exact defensive assignments. The simulator therefore applies neutral zone-defense factors unless supported defensive fields are supplied and never presents generated defenders as observed assignments. The generated event sequence samples from observed player tendencies; it is not a reconstruction of an actual game.
 
-Current-season recent box scores identify observed starters and minutes and are blended with season evidence before normalization to 240 minutes. They still do not constitute an injury report or confirmed future lineup. For a specific future game, provide verified expected-minute and availability overrides rather than interpreting the model rotation as confirmed.
+Current-season recent box scores identify observed starters and minutes and are blended with season evidence before normalization to 240 minutes. `analyze` separately imports the official NBA injury report, removes modeled out players and reallocates their minutes. Probable, questionable and doubtful players remain conditional playing scenarios, with review candidates blocked. Missing/unsubmitted reports and unmatched names remain warnings. Neither the injury report nor historical minutes confirms future starters or playing time; optional sourced manual overrides are available.
 
 ## Troubleshooting
 
