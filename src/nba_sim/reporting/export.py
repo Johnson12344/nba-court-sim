@@ -35,6 +35,8 @@ def export_run(
     players.to_csv(target / "player_distributions.csv", index=False)
     (target / "representative_game.json").write_text(json.dumps(representative_narrative(representative), indent=2, default=_json_default), encoding="utf-8")
     (target / "run_metadata.json").write_text(json.dumps(metadata, indent=2, default=_json_default), encoding="utf-8")
+    if summary.get("advisor"):
+        (target / "advisor.json").write_text(json.dumps(summary["advisor"], indent=2, default=_json_default), encoding="utf-8")
     if summary.get("betting_analysis"):
         analysis = summary["betting_analysis"]
         (target / "betting_analysis.json").write_text(json.dumps(analysis, indent=2, default=_json_default), encoding="utf-8")

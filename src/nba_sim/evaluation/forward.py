@@ -30,10 +30,18 @@ def save_results(processed_root: Path, new: list[dict]) -> dict:
     processed_root.mkdir(parents=True, exist_ok=True)
     path = processed_root / "results_nba.json"
     payload = _read(path) if path.exists() else {"events": {}}
+    observed_at = datetime.now(timezone.utc).isoformat()
     for event in new:
         previous = payload["events"].get(event["event_id"], {})
+        score_changed = any(previous.get(key) != event.get(key) for key in ("home_score", "away_score", "completed"))
+        event = dict(event)
+        event["observed_at"] = observed_at if score_changed else previous.get("observed_at", observed_at)
+        if "players" in event:
+            event["players_observed_at"] = (previous.get("players_observed_at", observed_at)
+                                             if event["players"] == previous.get("players") else observed_at)
         if "players" not in event and any(previous.get(key) != event.get(key) for key in ("home_score", "away_score")):
             previous.pop("players", None)
+            previous.pop("players_observed_at", None)
         # A score-only update must not discard verified player results.
         payload["events"][event["event_id"]] = {**previous, **event}
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()

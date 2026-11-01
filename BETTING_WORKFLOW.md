@@ -16,6 +16,8 @@ Replace the teams with your upcoming matchup. This downloads any missing baselin
 
 The combined report shows each team's projected score and win probability, **combined game total with its range**, every modeled player's points/rebounds/assists/minutes, available odds comparisons, and the review checks. The full files are saved together under `outputs`.
 
+It also includes the [learning advisor](ADVISOR.md), which remembers saved predictions and verified outcomes locally. It begins with NO BET and optional paper-only watches. Learned selections require at least 100 training games and 40 later validation games per market, plus successful validation and current data/price checks. The highest estimated chance of winning is ranked only among qualifying positive-value quotes; it is not a promise of safety or profit.
+
 Useful options on the same command:
 
 - `--cached`: simulate with downloaded data, odds and injury reports; no network requests or API credits.
@@ -23,6 +25,7 @@ Useful options on the same command:
 - `--no-player-props`: download game odds only to conserve credits.
 - `--lineups data\manual\nop-sac.csv`: optional advanced override, replacing the automatic injury report with your reviewed CSV.
 - `--simulations 1000`: run fewer simulations for a quicker report.
+- `--no-advisor`: skip the learning advisor and memory collection for this run.
 
 The report prints excluded players, availability warnings and publication/check times. Players marked **out** are removed after historical blending, and their minutes are redistributed among the remaining modeled players. Probable, questionable and doubtful players remain in a clearly labeled **playing scenario** and block review candidates until resolved. A player absent from a submitted team report is **not listed**, not confirmed active. Expected minutes and starting positions remain model estimates.
 
@@ -129,13 +132,23 @@ Open the new timestamped folder under `outputs`:
 - `market_probabilities.csv`: every supported quote, probability, price, EV, and any blockers.
 - `betting_analysis.json`: the full analysis, skipped offers, thresholds, and assumptions.
 - `run_metadata.json`: event, data timestamps, settings, and a snapshot of the automatic injury import or optional manual review.
+- `advisor.json`: the learning decision, any paper watch/shortlist, fitted weights, validation scores and memory counts.
 - Existing score, player-distribution, and representative-game files remain available.
 
 No matching upcoming event means no betting analysis. Unknown/excluded/ambiguous player names are skipped instead of assigned zero statistics. A simulation remains runnable when availability is unverified, but its offers will not pass the review checks. Automatic injury handling improves input coverage; it does not establish profitable predictions.
 
 ## 6. Measure whether the predictions actually help
 
-After games finish, download final team scores and evaluate saved predictions:
+Later online `analyze` runs now automatically check final NBA box scores for saved fixtures, using the cached league game log to find game IDs. This needs no extra API key or Odds API credits. Pending games remain pending until verified. See [automatic learning and results](ADVISOR.md) for refresh intervals, memory portability and limitations.
+
+To inspect memory or explicitly check pending results without a new simulation:
+
+```cmd
+.venv\Scripts\python.exe -m nba_sim advisor-memory
+.venv\Scripts\python.exe -m nba_sim advisor-memory --refresh
+```
+
+The commands below remain optional alternatives. After games finish, you can explicitly download final team scores and evaluate saved predictions:
 
 ```cmd
 .venv\Scripts\python.exe -m nba_sim refresh-results
@@ -144,7 +157,7 @@ After games finish, download final team scores and evaluate saved predictions:
 
 `refresh-results` uses the Odds API scores endpoint, consumes its API credits, and retrieves completed scores from the past three days. Run it regularly; saved results accumulate locally. It does not require historical-odds access.
 
-For player results, open the completed game's NBA.com page and copy its ten-digit NBA game ID. This is different from the Odds API event ID. Supply it with the saved prediction folder:
+If automatic matching cannot find a completed game's player results, open its NBA.com page and copy its ten-digit NBA game ID. This is different from the Odds API event ID. Supply it with the saved prediction folder:
 
 ```cmd
 .venv\Scripts\python.exe -m nba_sim record-result --run "outputs\YOUR_RUN_FOLDER" --nba-game-id NBA_GAME_ID

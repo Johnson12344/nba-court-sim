@@ -9,6 +9,7 @@ The program keeps real, user-supplied, and synthetic data paths separate. It nev
 - NBA.com aggregate team, advanced-team (including pace), and player refresh through `nba_api`.
 - Explicit NBA.com enrichment refresh for `ShotChartDetail`, `PlayByPlayV3`, and recent `BoxScoreTraditionalV3` rotations.
 - Automatic official NBA injury-report import with `analyze`: fixture/date matching, out-player exclusions, minute redistribution, publication timestamps and unresolved-status warnings. No injury API key or manual player spreadsheet required.
+- Local learning advisor with persistent prediction/outcome memory, automatic final box-score checks, chronological validation and an explicit NO BET decision. No extra AI key or subscription; see [advisor usage and limitations](ADVISOR.md).
 - Timestamped raw JSON preservation plus normalized local CSV caches.
 - A documented manual-CSV provider for API outages or curated inputs.
 - Validation for schemas, IDs, duplicates, negative values, impossible makes/attempts, missing teams, and empty seasons.
@@ -118,6 +119,8 @@ For a single command that updates inputs and prints the full matchup report, use
 ```
 
 It reuses recent downloads, fetches missing/stale data and available odds/player props, imports the official injury report and runs 5,000 simulations. Injuries need no extra API key and no per-player CSV editing. Add `--cached` to use only downloaded inputs. See the [full workflow](BETTING_WORKFLOW.md) for status handling and options. The report includes the combined total and player points, rebounds, assists, and minutes.
+
+The [learning advisor](ADVISOR.md) appears automatically in real reports with matched odds. It remembers predictions, collects verified final results on later online runs and learns how much weight to give simulation versus market probabilities. It starts with NO BET/paper-only observations until it has at least 100 training and 40 later validation games per market and passes its checks. View its local memory with `.venv\Scripts\python.exe -m nba_sim advisor-memory`; use `--no-advisor` to opt out for a run. No selection is presented as guaranteed or proven profitable.
 
 Create an API key at [The Odds API](https://the-odds-api.com/). Keep the key outside the project files. In Command Prompt, set it for the current terminal window and download current NBA lines:
 

@@ -16,6 +16,9 @@ for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "
 from rich.console import Console
 from rich.progress import Progress
 
+from nba_sim.advisor.learning import ADVISOR_VERSION, advise
+from nba_sim.advisor.memory import memory_summary, sync_memory
+from nba_sim.advisor.results import refresh_memory_results
 from nba_sim.config import load_settings, project_path
 from nba_sim.data.csv_provider import CsvProvider
 from nba_sim.data.demo_provider import DemoProvider
@@ -72,6 +75,7 @@ def _add_simulation_options(simulate: argparse.ArgumentParser) -> None:
     lineup.add_argument("--lineups", type=Path, help="Apply reviewed player status and expected minutes CSV")
     simulate.add_argument("--max-odds-age-minutes", type=float, default=60, help="Maximum quote age for review candidates")
     simulate.add_argument("--min-ev", type=float, default=0.02, help="Minimum modeled profit per unit for a review candidate")
+    simulate.add_argument("--no-advisor", action="store_true", help="Skip the learning advisor and its local memory update")
     _add_source(simulate)
 
 
@@ -106,6 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--run", type=Path, required=True, help="Saved simulation output folder")
     record.add_argument("--nba-game-id", required=True, help="Ten-digit NBA game ID from its NBA.com link")
     sub.add_parser("evaluate", help="Compare saved pregame predictions and paper selections with cached final results")
+    memory = sub.add_parser("advisor-memory", help="Show the local advisor's remembered predictions and outcomes")
+    memory.add_argument("--refresh", action="store_true", help="Check pending final NBA box scores using cached game logs")
 
     validate = sub.add_parser("validate-data", help="Validate cached official data or manual CSV files")
     validate.add_argument("--season", required=True)
@@ -239,6 +245,38 @@ def evaluate_command(args: argparse.Namespace) -> int:
     Console().print_json(json.dumps(report))
     Console().print(f"Evaluation saved: {target}")
     return 0
+
+
+def advisor_memory_command(args: argparse.Namespace) -> int:
+    memory = sync_memory(project_path("outputs"), project_path("data", "processed"))
+    console = Console()
+    if args.refresh:
+        refresh_memory_results(memory, project_path("data", "raw"), project_path("data", "processed"),
+                               force=True, progress=lambda value: console.print(value, markup=False))
+        memory = sync_memory(project_path("outputs"), project_path("data", "processed"))
+    summary = memory_summary(memory, str(_settings(args)["model_version"]), "possession", datetime.now(timezone.utc))
+    console.print_json(json.dumps(summary))
+    for warning in [*memory.get("warnings", []), *memory.get("result_warnings", [])]:
+        console.print(warning, style="yellow", markup=False)
+    console.print("Memory is local to this PC. Each market needs 100 training games and 40 later validation games before learned selections can qualify.")
+    return 0
+
+
+def _build_advisor(edge: dict, args: argparse.Namespace, settings: dict) -> dict:
+    console = Console()
+    try:
+        memory = sync_memory(project_path("outputs"), project_path("data", "processed"))
+        if args.command == "analyze" and not args.cached:
+            refresh_memory_results(memory, project_path("data", "raw"), project_path("data", "processed"),
+                                   force=args.refresh, progress=lambda value: console.print(value, markup=False))
+            memory = sync_memory(project_path("outputs"), project_path("data", "processed"))
+        result = advise(edge, memory, str(settings["model_version"]), args.model)
+        result["memory_warnings"] = [*memory.get("warnings", []), *memory.get("result_warnings", [])]
+        return result
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"advisor_version": ADVISOR_VERSION, "status": "unavailable", "selection": None,
+                "paper_watch": None, "reasons": [f"Advisor memory could not be used ({type(exc).__name__}). Existing memory was not reset."],
+                "limitations": "No learned selection is available for this run."}
 
 
 def validate_command(args: argparse.Namespace) -> int:
@@ -517,6 +555,7 @@ def simulate_command(args: argparse.Namespace) -> int:
         "model_version": settings["model_version"], "data_source": bundle.metadata.source,
         "data_retrieved_at": latest_data.retrieved_at, "is_demo": bundle.metadata.is_demo,
         "availability": availability, "model_settings": settings,
+        "advisor_enabled": not args.no_advisor,
         "data_snapshots": [{"season": b.metadata.season, "retrieved_at": b.metadata.retrieved_at}
                            for b in [baseline_bundle, *older_bundles, *([current_bundle] if current_bundle is not None else [])]],
         "historical_windows": windows or [args.season],
@@ -530,7 +569,14 @@ def simulate_command(args: argparse.Namespace) -> int:
         "coverage": bundle.metadata.coverage, "assumptions": metadata_assumptions,
         "reproduction_command": " ".join(sys.argv),
     }
+    if summary.get("betting_analysis") and not args.no_advisor and not metadata["is_demo"]:
+        summary["advisor"] = _build_advisor(summary["betting_analysis"], args, settings)
     output = export_run(project_path("outputs"), summary, scores, player_distributions, representative, metadata)
+    if summary.get("advisor"):
+        try:
+            sync_memory(project_path("outputs"), project_path("data", "processed"))
+        except (OSError, ValueError, KeyError, TypeError):
+            Console().print("The report was saved, but advisor memory could not be updated. Keep the output folder for a later retry.", style="yellow")
     render_report(summary, player_distributions, representative, metadata, home, away, str(output))
     return 0
 
@@ -554,6 +600,7 @@ def main(argv: list[str] | None = None) -> None:
             "refresh-odds": refresh_odds_command,
             "fixtures": fixtures_command, "refresh-results": refresh_results_command,
             "record-result": record_result_command, "evaluate": evaluate_command,
+            "advisor-memory": advisor_memory_command,
             "validate-data": validate_command,
             "simulate": simulate_command, "backtest": backtest_command,
             "analyze": analyze_command,

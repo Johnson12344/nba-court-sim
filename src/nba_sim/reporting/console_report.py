@@ -10,6 +10,38 @@ from rich.table import Table
 from nba_sim.models import SimulatedGame, TeamProfile
 
 
+def render_advisor(advisor: dict, console: Console) -> None:
+    console.print("[bold]Learning advisor[/bold]")
+    selected = advisor.get("selection")
+    console.print("Decision: candidate for review" if selected else "Decision: NO BET", style="cyan" if selected else "yellow")
+    memory = advisor.get("memory", {})
+    if memory:
+        console.print(f"Memory: {memory['saved_fixtures']} saved fixtures; {memory['completed_fixtures']} completed; "
+                      f"{memory['pending_fixtures']} awaiting results.")
+        if not selected:
+            console.print("Learning requires 100 training games plus 40 later validation games per market, and must pass the probability checks.")
+    for reason in advisor.get("reasons", []):
+        console.print(reason, markup=False)
+    row = selected or advisor.get("paper_watch")
+    if row:
+        label = f"{row['market']} | {row.get('player') or row.get('team') or ''} {row['selection']}"
+        if row.get("line") is not None:
+            label += f" {row['line']:+g}"
+        table = Table(title="Highest estimated win chance among qualifying offers" if selected else "Paper watch only - learning is not ready for this selection")
+        for column in ("Selection", "Book", "Odds", "Win %", "Loss %", "Push %", "EV %"):
+            table.add_column(column)
+        table.add_row(label, row["bookmaker"], f"{row['decimal_odds']:.2f}",
+                      f"{100 * row['estimated_win_probability']:.1f}", f"{100 * row['estimated_loss_probability']:.1f}",
+                      f"{100 * row['push_probability']:.1f}", f"{100 * row['adjusted_ev']:+.1f}")
+        console.print(table)
+        console.print(row["probability_source"], markup=False)
+        fit = advisor.get("models", {}).get(row["market"], {})
+        console.print(f"Learning for this market: {fit.get('games', 0)} usable games. {fit.get('reason', '')}", markup=False)
+    if advisor.get("memory_warnings"):
+        console.print(f"{len(advisor['memory_warnings'])} memory/result warnings saved in advisor.json; unresolved outcomes are not counted as losses.", style="yellow")
+    console.print(advisor.get("limitations", ""), style="dim", markup=False)
+
+
 def render_report(
     summary: dict[str, Any],
     players: pd.DataFrame,
@@ -27,6 +59,8 @@ def render_report(
         f"Source: {metadata['data_source']} | model {metadata['model_version']}",
         title=title, border_style="yellow" if metadata["is_demo"] else "blue",
     ))
+    if summary.get("advisor"):
+        render_advisor(summary["advisor"], console)
     availability = metadata.get("availability", {})
     if availability.get("mode") == "automatic":
         console.print("[bold]Automatic player availability[/bold]")
@@ -109,7 +143,7 @@ def render_report(
         offers = analysis["offers"]
         candidates = [row for row in offers if row["review_candidate"]]
         display = candidates[:12] if candidates else offers[:8]
-        table = Table(title="Review candidates" if candidates else "Price comparisons — no offers passed all review checks")
+        table = Table(title="Raw simulation candidates (advisor may reject)" if candidates else "Price comparisons — no offers passed all review checks")
         for column in ("Book", "Market / selection", "Odds", "Win %", "Push %", "EV %", "MC lower %", "Status"):
             table.add_column(column)
         for row in display:
