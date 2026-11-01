@@ -6,8 +6,31 @@ import pandas as pd
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from nba_sim.models import SimulatedGame, TeamProfile
+from nba_sim.reporting.win_prediction import probability_colour
+
+
+def render_win_prediction(prediction: dict, console: Console) -> None:
+    winner = prediction["winner"]
+    names, probabilities = prediction["team_names"], prediction["probabilities"]
+    content = Text()
+    content.append("Predicted winner: ", style="bold")
+    content.append(names[winner] if winner else "No clear favourite", style="bold")
+    teams = sorted(probabilities, key=probabilities.get, reverse=True)
+    for team in teams:
+        probability = probabilities[team]
+        content.append(f"\n{names[team]} - estimated win probability: ")
+        percentage = f"{100 * probability:.2f}".rstrip("0").rstrip(".")
+        content.append(f"{percentage}%", style=f"bold {probability_colour(probability)}")
+    content.append(f"\nSource: {prediction['source']}")
+    if prediction.get("input_warnings"):
+        content.append("\nUnverified inputs: availability/data warnings above still apply.", style="yellow")
+    content.append(f"\n{prediction['meaning']}", style="dim")
+    border = probability_colour(probabilities[winner]) if winner else "yellow"
+    console.print(Panel(content, title="DEMO win probabilities" if prediction.get("is_demo") else "This matchup: estimated win probabilities",
+                        border_style=border))
 
 
 def render_advisor(advisor: dict, console: Console) -> None:
@@ -207,3 +230,5 @@ def render_report(
     for assumption in metadata.get("assumptions", []):
         console.print(f"[yellow]Assumption/limitation:[/yellow] {assumption}")
     console.print(f"Exports: [bold]{output_path}[/bold]")
+    if summary.get("win_prediction"):
+        render_win_prediction(summary["win_prediction"], console)

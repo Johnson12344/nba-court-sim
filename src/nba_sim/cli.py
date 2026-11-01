@@ -39,6 +39,7 @@ from nba_sim.market.edges import build_edge_report
 from nba_sim.reporting.console_report import render_report
 from nba_sim.reporting.export import export_run
 from nba_sim.reporting.summary import create_summary
+from nba_sim.reporting.win_prediction import build_win_prediction
 from nba_sim.simulation.monte_carlo import run_simulations
 
 
@@ -571,6 +572,7 @@ def simulate_command(args: argparse.Namespace) -> int:
     }
     if summary.get("betting_analysis") and not args.no_advisor and not metadata["is_demo"]:
         summary["advisor"] = _build_advisor(summary["betting_analysis"], args, settings)
+    summary["win_prediction"] = build_win_prediction(summary, metadata)
     output = export_run(project_path("outputs"), summary, scores, player_distributions, representative, metadata)
     if summary.get("advisor"):
         try:

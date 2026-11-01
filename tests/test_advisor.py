@@ -298,11 +298,15 @@ def test_offline_cli_saves_advisor_and_remembers_run_without_extra_commands(tmp_
     assert cli.analyze_command(args) == 0
     run = next((tmp_path / "outputs").iterdir())
     advice = json.loads((run / "advisor.json").read_text())
+    summary = json.loads((run / "summary.json").read_text())
+    assert set(summary["win_prediction"]["probabilities"]) == {"OKC", "SAS"}
     assert advice["status"] == "no_bet"
     assert advice["selection"] is None
     memory = load_memory(tmp_path / "data" / "processed")
     assert len(memory["predictions"]) == 1
-    assert "Learning advisor" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "Learning advisor" in printed
+    assert printed.rfind("estimated win probability") > printed.rfind("Exports:")
 
 
 def test_result_download_failures_do_not_starve_other_games(tmp_path, monkeypatch):
