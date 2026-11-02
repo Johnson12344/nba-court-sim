@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+from nba_sim.market.catalog import EXTENDED_MARKETS
 
 
 BASE_URL = "https://api.the-odds-api.com/v4"
@@ -100,6 +101,7 @@ def refresh_nba_odds(
     home: str | None = None,
     away: str | None = None,
     include_player_props: bool = False,
+    extended_markets: bool = False,
     event_id: str | None = None,
     timeout: int = 30,
 ) -> dict[str, Any]:
@@ -109,6 +111,8 @@ def refresh_nba_odds(
         raise ValueError("Provide both --home and --away, or neither.")
     if include_player_props and not (home and away):
         raise ValueError("--include-player-props requires --home and --away.")
+    if extended_markets and not (home and away):
+        raise ValueError("--extended-markets requires --home and --away.")
     if event_id and not (home and away):
         raise ValueError("--event-id requires --home and --away.")
 
@@ -127,12 +131,15 @@ def refresh_nba_odds(
     from nba_sim.market.events import select_event
     selected = select_event({"events": events}, home, away, event_id) if home and away else None
     props_quota: dict[str, int | None] | None = None
-    if include_player_props:
+    additional = list(PLAYER_MARKETS) if include_player_props else []
+    if extended_markets:
+        additional.extend(k for k in EXTENDED_MARKETS if include_player_props or not k.startswith("player_"))
+    if additional:
         if selected is None:
             raise UpcomingEventUnavailable(f"No upcoming {away} at {home} event with sportsbook odds was found.")
         prop_params = {
             "regions": regions,
-            "markets": ",".join(PLAYER_MARKETS),
+            "markets": ",".join(additional),
             "oddsFormat": "decimal",
             "dateFormat": "iso",
         }
@@ -143,7 +150,8 @@ def refresh_nba_odds(
         )
         if not isinstance(props, dict) or str(props.get("id")) != str(selected["id"]):
             raise OddsApiError("Player odds response does not match the selected event.")
-        selected["player_prop_bookmakers"] = props.get("bookmakers", []) if isinstance(props, dict) else []
+        selected["player_prop_bookmakers"] = props.get("bookmakers", [])
+        selected["requested_additional_markets"] = additional
 
     retrieved_at = datetime.now(timezone.utc).isoformat()
     cache = {

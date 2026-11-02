@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from nba_sim.advisor.memory import save_memory
-from nba_sim.evaluation.forward import normalize_boxscore, save_results
+from nba_sim.evaluation.forward import normalize_boxscore, save_results, settle_offer
 from nba_sim.market.events import age_minutes, utc_time
 
 
@@ -36,7 +36,8 @@ def find_game_id(prediction: dict, processed: Path) -> str | None:
 
 
 def refresh_memory_results(memory: dict, raw: Path, processed: Path, *, force: bool = False,
-                           now: datetime | None = None, progress=None) -> list[str]:
+                           now: datetime | None = None, progress=None, refresh_logs: bool = False,
+                           max_games: int = 5) -> list[str]:
     now = now or datetime.now(timezone.utc)
     age = age_minutes(memory.get("results_checked_at"), now)
     if not force and age is not None and age < 360:
@@ -45,9 +46,31 @@ def refresh_memory_results(memory: dict, raw: Path, processed: Path, *, force: b
     for prediction in memory["predictions"].values():
         start = utc_time(prediction["commence_time"])
         actual = prediction.get("result", {})
-        if start and start < now and not actual.get("players"):
+        tracked = [*prediction.get("offers", []), *prediction.get("audit_offers", []),
+                   *prediction.get("paper_portfolio", [])]
+        missing = bool(actual) and any(settle_offer(o, actual)[0] in {"pending_player_result", "pending_period_result"}
+                                      for o in tracked)
+        if start and start < now and (not actual.get("players") or missing):
             pending.setdefault(prediction["event_id"], prediction)
     warnings = []
+    if refresh_logs:
+        from nba_api.stats.endpoints.leaguegamelog import LeagueGameLog
+        from nba_sim.data.normalizer import normalize_columns
+        for season in sorted({p["season"] for p in pending.values()}):
+            if not re.fullmatch(r"\d{4}-\d{2}", season):
+                continue
+            try:
+                if progress:
+                    progress(f"Memory: refreshing completed game log {season}")
+                frame = LeagueGameLog(season=season, season_type_all_star="Regular Season",
+                                     player_or_team_abbreviation="T", timeout=15).get_data_frames()[0]
+                normalized = normalize_columns(frame)
+                if not {"game_id", "game_date", "team_abbreviation", "matchup"} <= set(normalized):
+                    raise ValueError("Incomplete NBA game log")
+                processed.mkdir(parents=True, exist_ok=True)
+                normalized.to_csv(processed / f"game_log_{season}.csv", index=False)
+            except Exception as exc:
+                warnings.append(f"Game log {season} could not be refreshed ({type(exc).__name__}); checking existing cached matches.")
     last_attempts = memory.setdefault("result_attempts", {})
     # Bound online work; oldest pending fixtures first. An unresolvable fixture
     # does not consume a download slot or starve later resolvable games.
@@ -58,7 +81,7 @@ def refresh_memory_results(memory: dict, raw: Path, processed: Path, *, force: b
             if not game_id:
                 warnings.append(f"{prediction['event_id']}: awaiting a matching completed game in the NBA game log.")
                 continue
-            if attempts >= 5:
+            if attempts >= max_games:
                 warnings.append("Remaining results will be checked on a later analyze run.")
                 break
             attempts += 1

@@ -11,8 +11,8 @@ import tempfile
 
 from nba_sim.evaluation.forward import settle_offer
 from nba_sim.market.events import age_minutes, utc_time
+from nba_sim.market.catalog import MARKETS
 
-MARKETS = ("h2h", "spreads", "totals", "player_points", "player_rebounds", "player_assists")
 MEMORY_FILE = "advisor_memory.json"
 
 
@@ -39,6 +39,10 @@ def load_memory(processed: Path) -> dict:
                 or not isinstance(prediction.get("decision", {}), dict)
                 or not isinstance(prediction.get("result", {}), dict)):
             raise ValueError("An advisor memory entry is invalid; existing memory has not been overwritten.")
+        for key in ("audit_offers", "paper_portfolio"):
+            if key in prediction and (not isinstance(prediction[key], list)
+                                       or not all(isinstance(row, dict) for row in prediction[key])):
+                raise ValueError("Advisor review memory is invalid; existing memory has not been overwritten.")
     return memory
 
 
@@ -72,7 +76,7 @@ def usable_offer(row: dict, at: datetime, max_age: float = 60) -> bool:
         return False
 
 
-def representative_offers(offers: list[dict], metadata: dict, at: datetime, max_age: float) -> list[dict]:
+def representative_offers(offers: list[dict], metadata: dict, at: datetime, max_age: float, *, audit: bool = False) -> list[dict]:
     """One observation per event/market; repeated books, sides and players cannot pad N.
 
     Use home/Over orientation, most widely quoted player/line, then stable tie
@@ -80,8 +84,8 @@ def representative_offers(offers: list[dict], metadata: dict, at: datetime, max_
     """
     choices = []
     for market in MARKETS:
-        rows = [r for r in offers if r.get("market") == market and usable_offer(r, at, max_age)
-                and (r.get("team") == metadata["home_team"] if market in {"h2h", "spreads"}
+        rows = [r for r in offers if r.get("market") == market and usable_offer({**r, "blockers": []} if audit else r, at, max_age)
+                and (r.get("team") == metadata["home_team"] if market in {"h2h", "spreads", "spreads_q1"}
                      else r.get("selection") == "Over")]
         counts = Counter((r.get("player_id") or "", r.get("line")) for r in
                          { (r["bookmaker"], r.get("player_id"), r.get("line")): r for r in rows }.values())
@@ -116,17 +120,55 @@ def sync_memory(output_root: Path, processed: Path, *, now: datetime | None = No
                 continue
             key = json.dumps([event, str(meta["model_version"]), meta["model"]])
             previous = memory["predictions"].get(key)
-            if previous and utc_time(previous["created_at"]) <= created:
-                continue
             selection_path = path.parent / "advisor.json"
             decision = read_json(selection_path) if selection_path.exists() else {}
+            portfolio = [{**r, "prediction_created_at": created.isoformat(), "prediction_run": str(path.parent)}
+                         for r in decision.get("paper_portfolio", [])]
             choices = [] if edge.get("readiness_reasons") else representative_offers(
                 edge.get("offers", []), meta, edge_time, min(60, float(edge.get("max_odds_age_minutes", 60))))
+            for choice in choices:
+                choice["prediction_created_at"] = created.isoformat()
+                choice["prediction_run"] = str(path.parent)
+            audit = representative_offers(edge.get("offers", []), meta, edge_time,
+                                          min(60, float(edge.get("max_odds_age_minutes", 60))), audit=True)
+            if previous and utc_time(previous["created_at"]) <= created:
+                if utc_time(previous["created_at"]) == created:
+                    previous.setdefault("audit_offers", audit)
+                    previous.setdefault("exclusion_reasons", edge.get("readiness_reasons", []))
+                    previous.setdefault("paper_portfolio", portfolio)
+                    previous.setdefault("decision", {}).setdefault("reasons", decision.get("reasons", []))
+                # First eligible PRE-GAME forecast per market, determined by input
+                # quality only. Never replace the earliest decision or use outcomes
+                # to choose a later run. This lets a clean injury refresh contribute.
+                existing = {r["market"]: r for r in previous["offers"]}
+                for choice in choices:
+                    old = existing.get(choice["market"])
+                    if old is None or created < utc_time(old.get("prediction_created_at", previous["created_at"])):
+                        existing[choice["market"]] = choice
+                previous["offers"] = list(existing.values())
+                paper = {r["market"]: r for r in previous.get("paper_portfolio", [])}
+                for row in portfolio:
+                    old = paper.get(row["market"])
+                    if old is None or created < utc_time(old.get("prediction_created_at", previous["created_at"])):
+                        paper[row["market"]] = row
+                previous["paper_portfolio"] = list(paper.values())
+                continue
+            if previous:
+                present = {r["market"] for r in choices}
+                choices.extend({**r, "prediction_created_at": r.get("prediction_created_at", previous["created_at"])}
+                               for r in previous["offers"] if r["market"] not in present)
+                paper_markets = {r["market"] for r in portfolio}
+                portfolio.extend({**r, "prediction_created_at": r.get("prediction_created_at", previous["created_at"])}
+                                 for r in previous.get("paper_portfolio", []) if r["market"] not in paper_markets)
             memory["predictions"][key] = {
                 "event_id": event, "model_version": str(meta["model_version"]), "model": meta["model"],
                 "season": meta["season"], "home_team": meta["home_team"], "away_team": meta["away_team"],
                 "created_at": created.isoformat(), "commence_time": start.isoformat(), "run": str(path.parent),
-                "offers": choices, "decision": {"status": decision.get("status"),
+                "offers": choices, "audit_offers": audit,
+                "exclusion_reasons": edge.get("readiness_reasons", []),
+                "paper_portfolio": portfolio,
+                "decision": {"status": decision.get("status"),
+                                                   "reasons": decision.get("reasons", []),
                                                    "selection": decision.get("selection"),
                                                    "paper_watch": decision.get("paper_watch"),
                                                    "advisor_version": decision.get("advisor_version")},
@@ -154,7 +196,7 @@ def sync_memory(output_root: Path, processed: Path, *, now: datetime | None = No
     return memory
 
 
-def training_rows(memory: dict, version: str, model: str, now: datetime) -> list[dict]:
+def training_rows(memory: dict, version: str, model: str, now: datetime, *, audit: bool = False) -> list[dict]:
     rows = []
     for prediction in memory["predictions"].values():
         if (prediction["model_version"], prediction["model"]) != (version, model):
@@ -162,15 +204,17 @@ def training_rows(memory: dict, version: str, model: str, now: datetime) -> list
         actual = prediction.get("result")
         if not actual:
             continue
-        for offer in prediction["offers"]:
-            observed = utc_time(actual.get("players_observed_at" if offer["market"].startswith("player_") else "observed_at"))
+        for offer in prediction.get("audit_offers", prediction["offers"]) if audit else prediction["offers"]:
+            time_key = ("players_observed_at" if offer["market"].startswith("player_") else
+                        "periods_observed_at" if offer["market"].endswith("_q1") else "observed_at")
+            observed = utc_time(actual.get(time_key))
             if observed is None or observed > now or observed <= utc_time(prediction["commence_time"]):
                 continue
             status, _ = settle_offer(offer, actual)
             if status not in {"win", "loss"}:
                 continue  # Calibrate conditional win probability: pushes/DNPs are not losses.
             rows.append({"event_id": prediction["event_id"], "market": offer["market"],
-                         "created_at": prediction["created_at"], "observed_at": observed.isoformat(),
+                         "created_at": offer.get("prediction_created_at", prediction["created_at"]), "observed_at": observed.isoformat(),
                          "p": offer["conditional_win_probability"], "q": offer["market_no_vig_probability"],
                          "y": int(status == "win")})
     return rows
@@ -191,7 +235,9 @@ def memory_summary(memory: dict, version: str, model: str, now: datetime) -> dic
             status, profit = settle_offer(decision["paper_watch"], prediction["result"])
             if status in {"win", "loss", "push"}:
                 watch_settlements.append((status, profit))
-    return {"saved_fixtures": len(predictions), "completed_fixtures": sum(bool(p.get("result")) for p in predictions),
+    from nba_sim.advisor.review import review_history
+    return {**review_history(predictions, now),
+            "saved_fixtures": len(predictions), "completed_fixtures": sum(bool(p.get("result")) for p in predictions),
             "pending_fixtures": sum(utc_time(p["commence_time"]) < now and not p.get("result") for p in predictions),
             "usable_games_by_market": dict(Counter(r["market"] for r in training_rows(memory, version, model, now))),
             "paper_selections_settled": len(settlements),

@@ -83,6 +83,14 @@ def parse_report_pages(pages: list[str], source: str) -> dict:
     date = matchup = team = None
     sections: dict[tuple, dict] = {}
     for page_number, page in enumerate(pages, 1):
+        raw_lines = page.splitlines()
+        column_header = next((line for line in raw_lines if re.search(r"Game\s+Date", line) and "Reason" in line), "")
+        reason_column = column_header.find("Reason")
+        # Wrapped reasons can contain commas/status words. Identify them by the
+        # PDF's actual Reason column, never by guessing from their text alone.
+        continuations = {re.sub(r"\s+", " ", line).strip() for line in raw_lines
+                         if reason_column > 0 and line.strip()
+                         and len(line) - len(line.lstrip()) >= reason_column - 2}
         lines = [re.sub(r"\s+", " ", line).strip() for line in page.splitlines() if line.strip()]
         headers = [(i, _HEADER.search(line)) for i, line in enumerate(lines) if _HEADER.search(line)]
         if len(headers) != 1:
@@ -97,6 +105,12 @@ def parse_report_pages(pages: list[str], source: str) -> dict:
             lines.reverse()
         for line in lines:
             if _HEADER.search(line) or re.match(r"^Page \d+ of \d+$", line) or line.startswith("Game Date"):
+                continue
+            if line in continuations and not _STATUS.match(line):
+                section = sections.get((date, matchup, team), {})
+                if not section.get("players"):
+                    raise InjuryReportError(f"Unattached injury reason on page {page_number}.")
+                section["players"][-1]["reason"] += " " + line
                 continue
             found = re.match(r"^(\d{2}/\d{2}/\d{4})\s+", line)
             if found:
@@ -141,7 +155,7 @@ def parse_report_pages(pages: list[str], source: str) -> dict:
                     raise InjuryReportError("Conflicting injury report submission status.")
                 section["submitted"] = True
             elif new_team or "," in line or re.search(r"\b(Out|Questionable|Doubtful|Probable|Available)\b", line):
-                raise InjuryReportError("An injury report player row could not be read safely.")
+                raise InjuryReportError(f"An injury report player row could not be read safely (page {page_number}, {team}).")
             # Remaining lines contain only wrapped reasons, not participation data.
     if not sections or not any(s["submitted"] or s.get("pending") for s in sections.values()):
         raise InjuryReportError("No team reports could be read.")
@@ -220,11 +234,12 @@ def refresh_injury_report(raw: Path, processed: Path, season: str, *, force: boo
             and published_age is not None and published_age <= MAX_REPORT_AGE_MINUTES):
         return cached
     source, content = _download_report(season, now)
+    raw.mkdir(parents=True, exist_ok=True)
+    # Retain failed downloads for diagnosis; only parsed data can replace the cache.
+    (raw / urlparse(source).path.rsplit("/", 1)[-1]).write_bytes(content)
     report = parse_report_pdf(content, source)
     report.update(retrieved_at=now.isoformat(), season=season)
-    raw.mkdir(parents=True, exist_ok=True)
     processed.mkdir(parents=True, exist_ok=True)
-    (raw / urlparse(source).path.rsplit("/", 1)[-1]).write_bytes(content)
     # Replace only after downloading and validating the entire report.
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=processed, delete=False) as handle:
         json.dump(report, handle, indent=2)

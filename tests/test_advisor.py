@@ -333,3 +333,94 @@ def test_missing_game_log_does_not_delay_a_later_refreshed_log(tmp_path):
     warnings = refresh_memory_results(memory, tmp_path / "raw", tmp_path, now=NOW)
     assert warnings
     assert "results_checked_at" not in memory
+
+
+def test_blocked_forecast_is_audited_and_first_clean_pregame_run_can_train(tmp_path):
+    outputs, processed = tmp_path / "outputs", tmp_path / "processed"
+    bad = edge(readiness_reasons=["Availability unresolved"],
+               offers=[offer(blockers=["Availability unresolved"])])
+    first = write_run(outputs, "first", analysis=bad)
+    memory = sync_memory(outputs, processed, now=NOW)
+    saved = next(iter(memory["predictions"].values()))
+    assert saved["audit_offers"] and saved["offers"] == []
+    clean_time = NOW + timedelta(minutes=20)
+    clean_edge = edge(clean_time, commence_time=edge()["commence_time"])
+    clean_meta = metadata(clean_time, market_data=metadata()["market_data"])
+    write_run(outputs, "second", clean_meta, clean_edge)
+    memory = sync_memory(outputs, processed, now=clean_time)
+    saved = next(iter(memory["predictions"].values()))
+    assert saved["created_at"] == NOW.isoformat() and saved["run"] == str(first)
+    assert saved["offers"][0]["prediction_created_at"] == clean_time.isoformat()
+    # A postgame run cannot replace either forecast.
+    write_run(outputs, "third", metadata(NOW + timedelta(hours=3), market_data=metadata()["market_data"]), clean_edge)
+    again = sync_memory(outputs, processed, now=NOW + timedelta(days=1))
+    assert next(iter(again["predictions"].values()))["offers"] == saved["offers"]
+    saved["result"] = {"home_team": "OKC", "away_team": "SAS", "home_score": 90, "away_score": 100,
+                       "observed_at": (NOW + timedelta(hours=4)).isoformat()}
+    rows = training_rows(memory, VERSION, "possession", NOW + timedelta(days=1))
+    assert rows[0]["created_at"] == clean_time.isoformat()
+    assert rows[0]["y"] == 0
+
+
+def test_research_learns_from_excluded_forecasts_without_qualifying_a_bet():
+    memory = learned_memory(4)
+    for prediction in memory["predictions"].values():
+        prediction["audit_offers"] = prediction.pop("offers")
+        prediction["offers"] = []
+        prediction["exclusion_reasons"] = ["Unverified availability"]
+    result = advise(edge(), memory, VERSION, "possession", now=NOW)
+    fit = result["models"]["h2h"]
+    assert fit["games"] == 0
+    assert fit["diagnostic_learning"]["games"] == 4
+    assert fit["diagnostic_learning"]["simulation_weight"] == pytest.approx(.625)
+    assert result["status"] == "no_bet"
+    review = result["memory"]["market_history"]["h2h"]
+    assert review["wins"] == 3 and review["losses"] == 1 and review["excluded"] == 4
+    for prediction in memory["predictions"].values():
+        prediction["result"]["home_score"] = 90
+    changed = advise(edge(), memory, VERSION, "possession", now=NOW)
+    assert changed["models"]["h2h"]["diagnostic_learning"]["simulation_weight"] == 0
+
+
+def test_paper_portfolio_covers_markets_and_preserves_actual_losses(tmp_path):
+    rows = [offer(), offer(bookmaker="book-b"), offer(market="player_assists", player_id="7",
+                                                     player="Example Player", selection="Over", line=5.5)]
+    e = edge(offers=rows)
+    result = advise(e, {"predictions": {}}, VERSION, "possession", now=NOW)
+    assert {r["market"] for r in result["paper_portfolio"]} == {"h2h", "player_assists"}
+    folder = write_run(tmp_path / "outputs", "first", analysis=e)
+    (folder / "advisor.json").write_text(json.dumps(result))
+    memory = sync_memory(tmp_path / "outputs", tmp_path / "processed", now=NOW)
+    p = next(iter(memory["predictions"].values()))
+    p["result"] = {"home_team": "OKC", "away_team": "SAS", "home_score": 90, "away_score": 100,
+                   "observed_at": (NOW + timedelta(hours=4)).isoformat(),
+                   "players_observed_at": (NOW + timedelta(hours=4)).isoformat(),
+                   "players": {"OKC:7": {"played": True, "assists": 3}}}
+    review = memory_summary(memory, VERSION, "possession", NOW + timedelta(days=1))
+    assert len(review["recent_decisions"]) == 2
+    assert all(r["result"] == "loss" and r["profit_units"] == -1 for r in review["recent_decisions"])
+
+
+def test_result_refresh_can_update_missing_league_log(tmp_path, monkeypatch):
+    import pandas as pd
+    import nba_sim.advisor.results as results_module
+    from nba_api.stats.endpoints import leaguegamelog
+    from nba_api.live.nba.endpoints import boxscore
+    memory = learned_memory(1)
+    memory["predictions"]["0"].pop("result")
+    start = datetime.fromisoformat(memory["predictions"]["0"]["commence_time"])
+    class Log:
+        def __init__(self, **kwargs):
+            pass
+        def get_data_frames(self):
+            return [pd.DataFrame([{"GAME_ID": "0022900001", "GAME_DATE": start.date().isoformat(),
+                                   "TEAM_ABBREVIATION": "OKC", "MATCHUP": "OKC vs. SAS"}])]
+    monkeypatch.setattr(leaguegamelog, "LeagueGameLog", Log)
+    calls = []
+    def unavailable(**kwargs):
+        calls.append(kwargs["game_id"])
+        raise RuntimeError("fixture intentionally unavailable")
+    monkeypatch.setattr(boxscore, "BoxScore", unavailable)
+    refresh_memory_results(memory, tmp_path / "raw", tmp_path, refresh_logs=True, now=NOW)
+    assert (tmp_path / "game_log_2029-30.csv").exists()
+    assert calls == ["0022900001"]

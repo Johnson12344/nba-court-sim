@@ -16,6 +16,22 @@ Replace `HOME_CODE` and `AWAY_CODE` with the actual home and away team abbreviat
 
 Win probability and value are different: a likely winner can still be overpriced. The advisor requires at least 55% estimated outright win probability, at least 2% adjusted modeled EV (or your higher `--min-ev`), and the existing Monte Carlo/data checks. These are engineering screening thresholds, not proven optimal betting rules. Win, loss and push probabilities are displayed separately.
 
+## More markets and visible feedback
+
+The advisor compares individual priced selections across markets; it is not limited to match winners. Standard runs include moneyline, handicap, game total, player points, rebounds and assists. Add `--extended-markets` for first-quarter total and handicap, team totals, player made threes, points + rebounds, points + assists, rebounds + assists, and points + rebounds + assists:
+
+```cmd
+.venv\Scripts\python.exe -m nba_sim analyze --home SAS --away UTA --season 2026-27 --simulations 5000 --seed 42 --refresh --extended-markets
+```
+
+Extended markets require extra Odds API credits and are opt-in. `--no-player-props` also excludes the extended player markets, while retaining Q1 and team totals when requested. Actual coverage depends on the returned bookmaker quotes. These are the provider's named-book prices, not an integration with your Sportybet account; a different price or handicap changes the calculation. See the provider's [market definitions](https://the-odds-api.com/sports-odds-data/betting-markets.html). Unsupported markets, missing prices and missing statistics are never invented.
+
+Q1 probabilities use the first quarter of each simulated game, not the full-game total divided by four. Combined player markets sum that player's components within each same simulated game, preserving their relationship. Final NBA period scores must reconcile with final team scores before Q1 bets settle. Missing periods or player components remain pending; DNPs void. Full-game markets include overtime. Check the bookmaker's participation and settlement rules.
+
+Each report now shows **Markets checked**, with quote counts, data/price checks and eligible learning games. **Paper learning watchlist** saves one qualifying simulation candidate per market and later reports its win/loss/push/void and hypothetical one-unit return. It is a research list, not an accumulator or a recommendation to play every selection. NO BET reasons and final scores remain in the history too; abstaining is not scored as a winning or losing wager.
+
+There are two learning tracks. **Research** can fit an exploratory simulation/market weight from completed, saved forecasts with unverified inputs. It shows past prediction error and learns even when no wager was recommended. Such a weight is clearly labelled and never used to authorize a bet. **Eligible learning** accepts forecasts that pass the quality checks and still requires the chronological validation below. This prevents a broken injury feed from silently looking like successful validation. Neither track fabricates past odds or uses an outcome to choose which earlier forecast to keep.
+
 Every simulation report ends with **Predicted winner** and **Estimated win probability** for both teams. Percentages below 50% are red, 50% through 80% yellow, and above 80% green. Showing both teams also shows the underdog's probability, which is normally below 50%. An equal probability produces "No clear favourite". These describe the chance of winning this particular matchup, not historical accuracy, the chance of predicting the exact score, or betting safety. A high percentage does not override NO BET.
 
 The footer uses the learned **moneyline** estimate only when that model has passed preliminary validation and current data/quote checks pass. It uses a fresh home-side quote from the first bookmaker in alphabetical order, consistently with the training quote tie-break. Otherwise it clearly labels the simulation estimate as not yet calibrated; demo percentages remain labelled demo. A player-prop or spread probability is never presented as a team's win probability. Both percentages and their source are saved as `win_prediction` in `summary.json`.
@@ -24,11 +40,11 @@ The footer uses the learned **moneyline** estimate only when that model has pass
 
 Each saved pregame prediction, its selected training quotes and any advisor decision are remembered in `data/processed/advisor_memory.json`. Sources and the original run location remain attached. Memory persists after closing CMD. It is local to each PC, excluded from GitHub, and is not uploaded to an AI service. Keep backups of `outputs`, `advisor_memory.json` and `results_nba.json`. To move memory to a new PC, copy both JSON files into that PC's `data/processed` folder before running the advisor there; this replaces that PC's memory, so preserve its existing files first. There is no automatic cross-PC merge or synchronization.
 
-The advisor imports compatible saved reports automatically. Predictions from different simulator versions remain separate. The simulator itself stays at model version 0.5.0 in this release because its numerical mechanics have not changed; the application is 0.6.1 and the advisor has its own version 1.0.0. Reports without saved bookmaker probabilities cannot be reconstructed into training examples using later odds.
+The advisor imports compatible saved reports automatically. Predictions from different simulator versions remain separate. The simulator itself stays at model version 0.5.0 in this release because its numerical mechanics have not changed; the application is 0.7.0 and the advisor has its own version 1.1.0. Reports without saved bookmaker probabilities cannot be reconstructed into training examples using later odds.
 
-For every event/model/version, only the **first saved pregame run** is used. Re-running a game with more seeds or more bookmakers cannot inflate its experience or replace a losing forecast. An opted-out `--no-advisor` run is not imported later. Demo and postgame predictions are excluded. Predictions with unresolved availability, stale quotes or other blockers are remembered but do not supply training observations.
+For every event/model/version, the **first saved pregame decision** and its audit forecast are retained. Eligible training uses the **first quality-checked pregame quote per market**, with its own prediction time and run location. An early blocked run therefore cannot permanently prevent a later clean injury refresh from contributing. The paper watchlist similarly keeps the first qualifying paper choice per market. Repeated seeds/books cannot inflate the game count or overwrite that market's first eligible forecast or paper choice after a loss. An opted-out `--no-advisor` run is not imported later. Demo and postgame predictions are excluded. Unresolved availability and other blockers remain in the audit/research history, not eligible training; stale or unpaired prices are excluded from both.
 
-For each market separately (moneyline, spread, total, points, rebounds, assists), the learner fits a weight between the simulation probability and the bookmaker's same-book no-vig probability:
+For each supported market separately, the learner fits a weight between the simulation probability and the bookmaker's same-book no-vig probability:
 
 `learned probability = weight × simulation + (1 − weight) × market`
 
@@ -50,13 +66,13 @@ View memory without running a simulation:
 .venv\Scripts\python.exe -m nba_sim advisor-memory
 ```
 
-Check pending results using the game logs already on this PC:
+Refresh the completed game logs and check up to 30 pending NBA results, without running another simulation or using Odds API credits:
 
 ```cmd
 .venv\Scripts\python.exe -m nba_sim advisor-memory --refresh
 ```
 
-The existing `refresh-results`, `record-result` and `evaluate` commands remain available for explicit result collection/evaluation. The advisor imports their results on its next run. Result corrections replace old settlements; a score correction invalidates player totals until verified again.
+Use `--max-games 50` to check a larger backlog (maximum 100). The command displays a readable review and saves details to `data/processed/advisor_review.json`. Missing or failed NBA results stay pending. The existing `refresh-results`, `record-result` and `evaluate` commands remain available for explicit result collection/evaluation. The advisor imports their results on its next run. Result corrections replace old settlements; a score correction invalidates player totals and period scores until verified again.
 
 Memory reports separate hypothetical one-unit returns for learned review selections and paper-only watches. These do not represent actual wagers, account balances or executable prices. Existing `evaluate` output measures its own raw-EV paper strategy, separately from the advisor's selections. Shortlist alternatives are not combined into accumulators, and stake sizing is not provided.
 

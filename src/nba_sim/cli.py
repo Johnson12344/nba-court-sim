@@ -36,7 +36,7 @@ from nba_sim.market.odds_api import build_market_comparison, load_odds_cache, re
 from nba_sim.market.odds_api import NBA_TEAM_NAMES, UpcomingEventUnavailable
 from nba_sim.market.events import age_minutes, select_event, upcoming_events, utc_time
 from nba_sim.market.edges import build_edge_report
-from nba_sim.reporting.console_report import render_report
+from nba_sim.reporting.console_report import render_report, render_learning_history
 from nba_sim.reporting.export import export_run
 from nba_sim.reporting.summary import create_summary
 from nba_sim.reporting.win_prediction import build_win_prediction
@@ -101,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     odds.add_argument("--regions", default="us", help="Bookmaker region, such as us, uk, eu, or au")
     odds.add_argument("--bookmakers", help="Optional comma-separated bookmaker keys")
     odds.add_argument("--include-player-props", action="store_true", help="Also fetch points, rebounds, and assists for this matchup")
+    odds.add_argument("--extended-markets", action="store_true", help="Add Q1, team totals and (with player props) combined player markets; uses additional credits")
     odds.add_argument("--event-id", help="Exact event from fixtures; requires home and away")
 
     fixtures = sub.add_parser("fixtures", help="List upcoming games from downloaded odds; no API credits")
@@ -112,7 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--nba-game-id", required=True, help="Ten-digit NBA game ID from its NBA.com link")
     sub.add_parser("evaluate", help="Compare saved pregame predictions and paper selections with cached final results")
     memory = sub.add_parser("advisor-memory", help="Show the local advisor's remembered predictions and outcomes")
-    memory.add_argument("--refresh", action="store_true", help="Check pending final NBA box scores using cached game logs")
+    memory.add_argument("--refresh", action="store_true", help="Refresh completed NBA game logs and verify pending final box scores")
+    memory.add_argument("--max-games", type=int, default=30, help="Maximum final box scores to check with --refresh (1-100)")
 
     validate = sub.add_parser("validate-data", help="Validate cached official data or manual CSV files")
     validate.add_argument("--season", required=True)
@@ -130,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--regions", default="us")
     analyze.add_argument("--bookmakers", help="Comma-separated bookmaker keys")
     analyze.add_argument("--no-player-props", action="store_true", help="Download game odds only to conserve credits")
+    analyze.add_argument("--extended-markets", action="store_true", help="Also compare Q1, team totals and combined player markets; uses additional credits")
 
     backtest = sub.add_parser("backtest", help="Walk-forward evaluation from historical_games.csv")
     backtest.add_argument("--season", required=True)
@@ -180,11 +183,12 @@ def refresh_odds_command(args: argparse.Namespace) -> int:
         home=args.home,
         away=args.away,
         include_player_props=args.include_player_props,
+        extended_markets=getattr(args, "extended_markets", False),
         event_id=args.event_id,
     )
     console = Console()
     matched = select_event(cache, args.home, args.away, args.event_id) if args.home and args.away else None
-    core_quota = cache.get("quota", {}).get("core", {})
+    core_quota = cache.get("quota", {}).get("player_props") or cache.get("quota", {}).get("core", {})
     console.print(
         f"[green]Odds cached[/green]: {len(cache['events'])} active/upcoming NBA games from The Odds API. "
         f"Credits remaining: {core_quota.get('remaining', 'unknown')}."
@@ -249,14 +253,20 @@ def evaluate_command(args: argparse.Namespace) -> int:
 
 
 def advisor_memory_command(args: argparse.Namespace) -> int:
+    if not 1 <= args.max_games <= 100:
+        raise ValueError("--max-games must be between 1 and 100")
     memory = sync_memory(project_path("outputs"), project_path("data", "processed"))
     console = Console()
     if args.refresh:
         refresh_memory_results(memory, project_path("data", "raw"), project_path("data", "processed"),
-                               force=True, progress=lambda value: console.print(value, markup=False))
+                               force=True, refresh_logs=True, max_games=args.max_games,
+                               progress=lambda value: console.print(value, markup=False))
         memory = sync_memory(project_path("outputs"), project_path("data", "processed"))
     summary = memory_summary(memory, str(_settings(args)["model_version"]), "possession", datetime.now(timezone.utc))
-    console.print_json(json.dumps(summary))
+    render_learning_history(summary, console)
+    review_path = project_path("data", "processed", "advisor_review.json")
+    review_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    console.print(f"Detailed learning review saved: {review_path}")
     for warning in [*memory.get("warnings", []), *memory.get("result_warnings", [])]:
         console.print(warning, style="yellow", markup=False)
     console.print("Memory is local to this PC. Each market needs 100 training games and 40 later validation games before learned selections can qualify.")
@@ -362,6 +372,10 @@ def analyze_command(args: argparse.Namespace) -> int:
                  and odds_age <= min(15, args.max_odds_age_minutes)
                  and cache.get("regions") == args.regions and cache.get("bookmakers_filter") == args.bookmakers
                  and (args.no_player_props or "player_prop_bookmakers" in event))
+        if args.extended_markets and reuse:
+            from nba_sim.market.catalog import EXTENDED_MARKETS
+            required = {k for k in EXTENDED_MARKETS if not args.no_player_props or not k.startswith("player_")}
+            reuse = required <= set(event.get("requested_additional_markets", []))
         if reuse:
             console.print("Using recently downloaded odds.")
         elif os.getenv("THE_ODDS_API_KEY", "").strip():

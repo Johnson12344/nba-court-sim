@@ -10,6 +10,42 @@ from rich.text import Text
 
 from nba_sim.models import SimulatedGame, TeamProfile
 from nba_sim.reporting.win_prediction import probability_colour
+from nba_sim.market.catalog import LABELS
+
+
+def render_learning_history(memory: dict, console: Console) -> None:
+    console.print(f"Memory: {memory.get('saved_fixtures', 0)} saved fixtures; "
+                  f"{memory.get('completed_fixtures', 0)} completed; "
+                  f"{memory.get('pending_fixtures', 0)} awaiting results; "
+                  f"{memory.get('fixtures_without_training', 0)} without eligible training forecasts.")
+    for excluded in memory.get("training_exclusions", [])[:3]:
+        console.print(f"Excluded in {excluded['fixtures']} saved fixtures: {excluded['reason']}", style="yellow", markup=False)
+    history = memory.get("market_history", {})
+    if history:
+        table = Table(title="Past forecast review (includes unverified inputs; lower Brier error is better)")
+        for title in ("Market", "Win/Loss", "Push/Void", "Excluded", "Sim error", "Market error", "Training games"):
+            table.add_column(title)
+        for market, row in history.items():
+            fmt = lambda value: "-" if value is None else f"{value:.3f}"
+            table.add_row(LABELS.get(market, market), f"{row['wins']}/{row['losses']}",
+                          f"{row['pushes']}/{row['voids']}", str(row['excluded']),
+                          fmt(row['simulation_brier']), fmt(row['market_brier']),
+                          str(memory.get('usable_games_by_market', {}).get(market, 0)))
+        console.print(table)
+    recent = memory.get("recent_decisions", [])[:5]
+    if recent:
+        table = Table(title="Recent saved decisions and actual results (hypothetical one-unit returns)")
+        for title in ("Fixture", "Selection", "Type", "Result", "Return"):
+            table.add_column(title)
+        for row in recent:
+            label = f"{LABELS.get(row['market'], row['market'])}: {row.get('player') or row.get('team') or ''} {row['selection']}"
+            if row.get("line") is not None:
+                label += f" {row['line']:g}"
+            table.add_row(row['fixture'], label, row['kind'], row['result'],
+                          "-" if row['profit_units'] is None else f"{row['profit_units']:+.2f}")
+        console.print(table)
+    if memory.get("recent_no_bets"):
+        console.print(f"NO BET decisions retained: {len(memory['recent_no_bets'])} recent entries in the saved review, with reasons and final scores when available.", style="dim")
 
 
 def render_win_prediction(prediction: dict, console: Console) -> None:
@@ -39,12 +75,40 @@ def render_advisor(advisor: dict, console: Console) -> None:
     console.print("Decision: candidate for review" if selected else "Decision: NO BET", style="cyan" if selected else "yellow")
     memory = advisor.get("memory", {})
     if memory:
-        console.print(f"Memory: {memory['saved_fixtures']} saved fixtures; {memory['completed_fixtures']} completed; "
-                      f"{memory['pending_fixtures']} awaiting results.")
+        render_learning_history(memory, console)
         if not selected:
             console.print("Learning requires 100 training games plus 40 later validation games per market, and must pass the probability checks.")
     for reason in advisor.get("reasons", []):
         console.print(reason, markup=False)
+    coverage = advisor.get("market_coverage", {})
+    if coverage:
+        table = Table(title="Markets checked for this game")
+        for title in ("Market", "Quotes", "Data OK", "Price OK", "Eligible games", "Research games", "State"):
+            table.add_column(title)
+        for market, row in coverage.items():
+            state = row['learning_status'] if row['quotes'] else "No downloaded quotes"
+            table.add_row(LABELS.get(market, market), str(row['quotes']), str(row['quality_ok']),
+                          str(row['price_ok']), f"{row['learning_games']}/140", str(row['diagnostic_games']), state)
+        console.print(table)
+        researched = [(LABELS.get(k, k), v['diagnostic_weight']) for k, v in coverage.items()
+                      if v.get('diagnostic_weight') is not None]
+        if researched:
+            console.print("Exploratory simulation weights learned from past results (0 = market, 1 = simulation): " +
+                          "; ".join(f"{label}: {weight:.2f}" for label, weight in researched), markup=False)
+            console.print("Research includes forecasts with unverified inputs. These weights do not authorize a bet.", style="dim")
+    portfolio = advisor.get("paper_portfolio", [])
+    if portfolio:
+        table = Table(title="Paper learning watchlist - one per market, not an accumulator or betting recommendation")
+        for title in ("Market", "Selection", "Book", "Odds", "Sim win %", "Sim EV %"):
+            table.add_column(title)
+        for row in portfolio:
+            label = f"{row.get('player') or row.get('team') or ''} {row['selection']}"
+            if row.get("line") is not None:
+                label += f" {row['line']:g}"
+            table.add_row(LABELS.get(row['market'], row['market']), label, row['bookmaker'],
+                          f"{row['decimal_odds']:.2f}", f"{100 * row['estimated_win_probability']:.1f}",
+                          f"{100 * row['adjusted_ev']:+.1f}")
+        console.print(table)
     row = selected or advisor.get("paper_watch")
     if row:
         label = f"{row['market']} | {row.get('player') or row.get('team') or ''} {row['selection']}"

@@ -13,7 +13,7 @@ import numpy as np
 from nba_sim.advisor.memory import MARKETS, fingerprint, memory_summary, training_rows, usable_offer
 from nba_sim.market.events import age_minutes, utc_time
 
-ADVISOR_VERSION = "1.0.0"
+ADVISOR_VERSION = "1.1.0"
 MIN_TRAIN = 100
 MIN_VALIDATION = 40
 MIN_WIN_PROBABILITY = 0.55
@@ -34,6 +34,9 @@ def fit_market(rows: list[dict]) -> dict:
     rows = sorted(events.values(), key=lambda r: (utc_time(r["created_at"]), r["event_id"]))
     report = {"status": "learning", "games": len(rows), "minimum_training_games": MIN_TRAIN,
               "minimum_validation_games": MIN_VALIDATION, "training_fingerprint": fingerprint(rows)}
+    if rows:
+        report["provisional_simulation_weight"] = fit_weight(rows)
+        report["provisional_note"] = "Updated from completed outcomes; unvalidated and not used for betting recommendations."
     if len(rows) < MIN_TRAIN + MIN_VALIDATION:
         report["reason"] = f"Needs at least {MIN_TRAIN} training games plus {MIN_VALIDATION} later validation games."
         return report
@@ -65,13 +68,27 @@ def advise(edge: dict, memory: dict, version: str, model: str, *, now: datetime 
     excluded_event = excluded_event or edge.get("event_id")
     rows = [r for r in training_rows(memory, version, model, now) if r["event_id"] != excluded_event]
     models = {market: fit_market([r for r in rows if r["market"] == market]) for market in MARKETS}
+    audit_rows = [r for r in training_rows(memory, version, model, now, audit=True) if r["event_id"] != excluded_event]
+    for market, fitted in models.items():
+        observations = [r for r in audit_rows if r["market"] == market]
+        fitted["diagnostic_learning"] = {
+            "games": len(observations),
+            "simulation_weight": fit_weight(observations) if observations else None,
+            "note": "Exploratory fit includes excluded forecasts; never used for recommendations or validation."}
     result = {"advisor_version": ADVISOR_VERSION, "created_at": now.isoformat(), "status": "no_bet",
-              "selection": None, "paper_watch": None, "shortlist": [], "models": models,
+              "selection": None, "paper_watch": None, "paper_portfolio": [], "shortlist": [], "models": models,
               "memory": memory_summary(memory, version, model, now), "model_version": version,
               "reasons": [], "selection_rule": "Highest estimated win chance among eligible positive-EV quotes; then higher EV.",
               "limitations": "Probabilities and minutes remain estimates. No bet is safe or guaranteed. "
                              "Validation measures prediction error, not proven profit. No bets are placed. "
                              "Push probability remains the simulator estimate; player settlement assumes DNP voids."}
+    result["market_coverage"] = {
+        market: {"quotes": sum(o.get("market") == market for o in edge.get("offers", [])),
+                 "quality_ok": 0, "price_ok": 0, "learned_candidates": 0,
+                 "learning_games": models[market]["games"], "learning_status": models[market]["status"],
+                 "diagnostic_games": models[market]["diagnostic_learning"]["games"],
+                 "diagnostic_weight": models[market]["diagnostic_learning"]["simulation_weight"],
+                 "reason": models[market]["reason"]} for market in MARKETS}
     start = utc_time(edge.get("commence_time"))
     created_age = age_minutes(edge.get("created_at"), now)
     if (not start or not 0 < (start - now).total_seconds() <= 86400 or created_age is None or created_age > 60):
@@ -82,8 +99,11 @@ def advise(edge: dict, memory: dict, version: str, model: str, *, now: datetime 
         return result
     candidates, watch = [], []
     for offer in edge.get("offers", []):
-        if (not usable_offer(offer, now, min(60, edge.get("max_odds_age_minutes", 60)))
-                or not offer.get("review_candidate") or offer.get("mc_lower_profit_per_unit", -1) <= 0):
+        if not usable_offer(offer, now, min(60, edge.get("max_odds_age_minutes", 60))):
+            continue
+        coverage = result["market_coverage"][offer["market"]]
+        coverage["quality_ok"] += 1
+        if not offer.get("review_candidate") or offer.get("mc_lower_profit_per_unit", -1) <= 0:
             continue
         p, q = offer["conditional_win_probability"], offer["market_no_vig_probability"]
         push, price = offer["push_probability"], offer["decimal_odds"]
@@ -97,6 +117,7 @@ def advise(edge: dict, memory: dict, version: str, model: str, *, now: datetime 
                "probability_source": "Unvalidated simulation only", "learning_status": model_fit["status"]}
         if raw["estimated_win_probability"] >= MIN_WIN_PROBABILITY:
             watch.append(raw)
+            coverage["price_ok"] += 1
         if model_fit["status"] != "passed":
             continue
         weight = model_fit["simulation_weight"]
@@ -110,6 +131,7 @@ def advise(edge: dict, memory: dict, version: str, model: str, *, now: datetime 
                            "probability_source": "Outcome-trained simulation/market blend",
                            "simulation_weight": weight, "learning_status": "passed",
                            "training_games": model_fit["training_games"], "validation_games": model_fit["validation_games"]})
+        coverage["learned_candidates"] += 1
     order = lambda r: (-r["estimated_win_probability"], -r["adjusted_ev"], r["bookmaker"], r["market"])
     # Multiple books quoting the same selection should not occupy the shortlist.
     distinct = {}
@@ -117,6 +139,10 @@ def advise(edge: dict, memory: dict, version: str, model: str, *, now: datetime 
         identity = (row["market"], row.get("player_id"), row.get("team"), row["selection"], row.get("line"))
         distinct.setdefault(identity, row)
     result["shortlist"] = list(distinct.values())[:3]
+    portfolio = {}
+    for row in sorted(watch, key=order):
+        portfolio.setdefault(row["market"], row)
+    result["paper_portfolio"] = list(portfolio.values())
     if result["shortlist"]:
         result.update(status="review_candidate", selection=result["shortlist"][0])
         result["reasons"] = ["Passed current data checks and preliminary chronological validation.",
@@ -126,4 +152,13 @@ def advise(edge: dict, memory: dict, version: str, model: str, *, now: datetime 
         if watch:
             result["paper_watch"] = sorted(watch, key=order)[0]
             result["reasons"].append("A paper-only simulation candidate is shown while the advisor collects and validates outcomes.")
+        quoted = [v for v in result["market_coverage"].values() if v["quotes"]]
+        if not quoted:
+            result["reasons"].append("No supported priced markets were returned for this fixture.")
+        elif not any(v["quality_ok"] for v in quoted):
+            result["reasons"].append("All quotes failed data, freshness or paired-price checks.")
+        elif not any(v["price_ok"] for v in quoted):
+            result["reasons"].append("No quote met the probability, positive-value and simulation-uncertainty thresholds.")
+        if quoted and not any(v["learning_status"] == "passed" for v in quoted):
+            result["reasons"].append("None of the available markets has passed learning validation yet; progress is shown by market.")
     return result

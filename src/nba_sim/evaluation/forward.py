@@ -10,6 +10,7 @@ import pandas as pd
 
 from nba_sim.market.events import utc_time
 from nba_sim.market.odds_api import NBA_TEAM_NAMES, NBA_SPORT_KEY, _request
+from nba_sim.market.catalog import PLAYER_COMPONENTS
 
 
 def _read(path: Path) -> dict:
@@ -42,6 +43,12 @@ def save_results(processed_root: Path, new: list[dict]) -> dict:
         if "players" not in event and any(previous.get(key) != event.get(key) for key in ("home_score", "away_score")):
             previous.pop("players", None)
             previous.pop("players_observed_at", None)
+        if "periods" in event:
+            event["periods_observed_at"] = (previous.get("periods_observed_at", observed_at)
+                                             if event["periods"] == previous.get("periods") else observed_at)
+        elif score_changed:
+            previous.pop("periods", None)
+            previous.pop("periods_observed_at", None)
         # A score-only update must not discard verified player results.
         payload["events"][event["event_id"]] = {**previous, **event}
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -89,6 +96,7 @@ def normalize_boxscore(payload: dict, metadata: dict) -> dict:
         raise ValueError("NBA game time does not match the saved fixture (maximum six-hour difference)")
     players = {}
     scores = {}
+    periods = {}
     for label in ("home", "away"):
         team = game.get(f"{label}Team", {})
         abbreviation = team.get("teamTricode")
@@ -107,13 +115,25 @@ def normalize_boxscore(payload: dict, metadata: dict) -> dict:
                 raise ValueError("Incomplete statistics for a player who participated")
             players[key] = {"played": str(player["played"]) == "1", "points": _score(stats.get("points", 0)),
                             "rebounds": _score(stats.get("reboundsTotal", 0)), "assists": _score(stats.get("assists", 0))}
+            if "threePointersMade" in stats:
+                players[key]["threes"] = _score(stats["threePointersMade"])
         if sum(p["points"] for key, p in players.items() if key.startswith(f"{abbreviation}:")) != scores[f"{label}_score"]:
             raise ValueError("Player points do not reconcile with the final team score")
+        if team.get("periods"):
+            rows = team["periods"]
+            period_scores = {str(_score(row["period"])): _score(row["score"]) for row in rows}
+            if (len(period_scores) != len(rows) or set(period_scores) != {str(i) for i in range(1, len(rows) + 1)}
+                    or len(rows) < 4 or sum(period_scores.values()) != scores[f"{label}_score"]):
+                raise ValueError("Period scores do not reconcile with the final team score")
+            periods[label] = period_scores
     if scores["home_score"] == scores["away_score"]:
         raise ValueError("A final NBA result cannot be tied")
+    if periods and (set(periods) != {"home", "away"} or set(periods["home"]) != set(periods["away"])):
+        raise ValueError("Incomplete final period scores")
     return {"event_id": str(market["event_id"]), "nba_game_id": str(game["gameId"]),
             "home_team": metadata["home_team"], "away_team": metadata["away_team"],
             "commence_time": market["commence_time"], **scores, "players": players,
+            **({"periods": periods} if periods else {}),
             "completed": True, "source": "NBA.com final box score"}
 
 
@@ -138,26 +158,42 @@ def record_boxscore(run: Path, nba_game_id: str, raw_root: Path, processed_root:
 
 def settle_offer(offer: dict, result: dict) -> tuple[str, float | None]:
     key = offer["market"]
-    if key in {"h2h", "spreads"}:
-        value = result["home_score"] - result["away_score"]
+    home_score, away_score = result["home_score"], result["away_score"]
+    if key in {"totals_q1", "spreads_q1"}:
+        periods = result.get("periods", {})
+        if "1" not in periods.get("home", {}) or "1" not in periods.get("away", {}):
+            return "pending_period_result", None
+        home_score, away_score = periods["home"]["1"], periods["away"]["1"]
+    if key in {"h2h", "spreads", "spreads_q1"}:
+        value = home_score - away_score
         if offer["team"] == result["away_team"]:
             value = -value
         elif offer["team"] != result["home_team"]:
             return "unmatched", None
-        if key == "spreads":
+        if key != "h2h":
             value += offer["line"]
-    elif key == "totals":
-        value = result["home_score"] + result["away_score"] - offer["line"]
+    elif key in {"totals", "totals_q1", "team_totals"}:
+        if key == "team_totals":
+            if offer.get("team") not in {result["home_team"], result["away_team"]}:
+                return "unmatched", None
+            score = home_score if offer["team"] == result["home_team"] else away_score
+        else:
+            score = home_score + away_score
+        value = score - offer["line"]
         if offer["selection"] == "Under":
             value = -value
     else:
-        stat = {"player_points": "points", "player_rebounds": "rebounds", "player_assists": "assists"}.get(key)
+        stats = PLAYER_COMPONENTS.get(key)
+        if stats is None:
+            return "unsupported_market", None
         player = result.get("players", {}).get(f"{offer['team']}:{offer['player_id']}")
-        if stat is None or player is None:
+        if player is None:
             return "pending_player_result", None
         if not player["played"]:
             return "void_dnp", 0.0
-        value = player[stat] - offer["line"]
+        if not set(stats) <= player.keys():
+            return "pending_player_result", None
+        value = sum(player[stat] for stat in stats) - offer["line"]
         if offer["selection"] == "Under":
             value = -value
     if value == 0:

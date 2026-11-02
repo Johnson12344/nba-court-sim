@@ -77,6 +77,18 @@ def test_mismatched_publication_and_broken_pdf_fail_closed():
         feed.parse_report_pdf(b"not a PDF", SOURCE)
 
 
+def test_wrapped_reason_with_comma_or_status_word_does_not_discard_whole_report():
+    heading = "Game Date Game Time Matchup Team Player Name Current Status".ljust(100) + "Reason"
+    content = (HEADER + "\n" + heading + "\n"
+               "10/30/2026 07:30 (ET) NYK@PHI New York Knicks Example, Alex Out Injury/Illness - Knee\n"
+               + " " * 100 + "Soreness, Out of practice\n"
+               "Philadelphia 76ers None")
+    result = feed.parse_report_pages([content], SOURCE)
+    assert result["teams"][0]["players"][0]["reason"].endswith("Soreness, Out of practice")
+    assert result["teams"][0]["players"][0]["status"] == "out"
+    assert result["teams"][1]["submitted"]
+
+
 def test_name_normalization_retains_suffixes_and_handles_accents():
     assert player_key("Smith Jr., Jose") == player_key("José Smith Jr.")
     assert player_key("Butler III, Jimmy") == player_key("Jimmy Butler III")

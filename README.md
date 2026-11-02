@@ -10,6 +10,7 @@ The program keeps real, user-supplied, and synthetic data paths separate. It nev
 - Explicit NBA.com enrichment refresh for `ShotChartDetail`, `PlayByPlayV3`, and recent `BoxScoreTraditionalV3` rotations.
 - Automatic official NBA injury-report import with `analyze`: fixture/date matching, out-player exclusions, minute redistribution, publication timestamps and unresolved-status warnings. No injury API key or manual player spreadsheet required.
 - Local learning advisor with persistent prediction/outcome memory, automatic final box-score checks, chronological validation and an explicit NO BET decision. No extra AI key or subscription; see [advisor usage and limitations](ADVISOR.md).
+- Optional `analyze --extended-markets` compares Q1 totals/handicaps, team totals, player threes and combined player stats. Market-by-market learning progress, paper watchlists and actual-result reviews make exclusions and losses visible. Extra markets consume additional odds credits.
 - Timestamped raw JSON preservation plus normalized local CSV caches.
 - A documented manual-CSV provider for API outages or curated inputs.
 - Validation for schemas, IDs, duplicates, negative values, impossible makes/attempts, missing teams, and empty seasons.

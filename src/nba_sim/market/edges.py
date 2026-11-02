@@ -8,9 +8,7 @@ import numpy as np
 
 from nba_sim.market.events import age_minutes, utc_time
 from nba_sim.models import SimulatedGame, TeamProfile
-
-PROP_STATS = {"player_points": "points", "player_rebounds": "rebounds", "player_assists": "assists"}
-
+from nba_sim.market.catalog import MARKETS, PLAYER_COMPONENTS
 
 def normalized_name(value: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", value).casefold() if c.isalnum() and not unicodedata.combining(c))
@@ -48,7 +46,7 @@ def _opposite_price(market: dict, outcome: dict, event: dict) -> float | None:
             continue
         if key == "h2h":
             paired = other.get("name") in {event["home_team"], event["away_team"]} and other.get("name") != outcome.get("name")
-        elif key == "spreads":
+        elif key in {"spreads", "spreads_q1"}:
             paired = (other.get("name") in {event["home_team"], event["away_team"]}
                       and other.get("name") != outcome.get("name")
                       and _number(other.get("point")) == -float(outcome["point"]))
@@ -92,12 +90,20 @@ def build_edge_report(cache: dict, event: dict, games: list[SimulatedGame],
     total = np.asarray([game.total for game in games], dtype=float)
     samples = {}
     offers, skipped = [], []
-    books = event.get("bookmakers", []) + event.get("player_prop_bookmakers", [])
+    books = event.get("bookmakers", []) + event.get("player_prop_bookmakers", []) + event.get("extended_bookmakers", [])
     for book in books:
         for market in book.get("markets", []):
             key = market.get("key")
-            if key not in {"h2h", "spreads", "totals", *PROP_STATS}:
+            if key not in MARKETS:
                 continue
+            period_margin = period_total = None
+            if key.endswith("_q1"):
+                quarters = [[q for q in getattr(game, "quarter_scores", []) if q.get("period") == 1] for game in games]
+                if any(len(q) != 1 or not {"home", "away"} <= q[0].keys() for q in quarters):
+                    skipped.append(f"No complete first-quarter simulation samples: {key}")
+                    continue
+                period_margin = np.asarray([q[0]["home"] - q[0]["away"] for q in quarters], dtype=float)
+                period_total = np.asarray([q[0]["home"] + q[0]["away"] for q in quarters], dtype=float)
             if key == "h2h" and (len(market.get("outcomes", [])) != 2 or
                                   {o.get("name") for o in market["outcomes"]} != {event["home_team"], event["away_team"]}):
                 skipped.append("Unsupported moneyline market (requires two outcomes including overtime)")
@@ -115,17 +121,28 @@ def build_edge_report(cache: dict, event: dict, games: list[SimulatedGame],
                     skipped.append("Only whole and half-point lines are supported")
                     continue
                 player_id, player_name, team_code = None, None, None
-                if key in {"h2h", "spreads"}:
+                if key in {"h2h", "spreads", "spreads_q1"}:
                     if side not in {event["home_team"], event["away_team"]}:
                         continue
-                    values = margin if side == event["home_team"] else -margin
-                    values = values + line if key == "spreads" else values
+                    margins = period_margin if key == "spreads_q1" else margin
+                    values = margins if side == event["home_team"] else -margins
+                    values = values + line if key != "h2h" else values
                     team_code = home.abbreviation if side == event["home_team"] else away.abbreviation
                 else:
                     if side not in {"Over", "Under"}:
                         continue
                     if key == "totals":
                         raw_values = total
+                    elif key == "totals_q1":
+                        raw_values = period_total
+                    elif key == "team_totals":
+                        description = outcome.get("description")
+                        if description not in {event["home_team"], event["away_team"]}:
+                            skipped.append("Unmatched team total")
+                            continue
+                        is_home = description == event["home_team"]
+                        team_code = home.abbreviation if is_home else away.abbreviation
+                        raw_values = (total + margin if is_home else total - margin) / 2
                     else:
                         found = names.get(normalized_name(str(outcome.get("description", ""))), [])
                         if len(found) != 1:
@@ -138,7 +155,9 @@ def build_edge_report(cache: dict, event: dict, games: list[SimulatedGame],
                             boxes = [game.player_stats.get(team_code, {}).get(player_id) for game in games]
                             # A missing box is not silently counted as zero (e.g. score-only model).
                             samples[sample_key] = None if any(box is None for box in boxes) else np.asarray([
-                                box.oreb + box.dreb if key == "player_rebounds" else getattr(box, PROP_STATS[key]) for box in boxes
+                                sum(box.oreb + box.dreb if stat == "rebounds" else
+                                    box.fg3m if stat == "threes" else getattr(box, stat)
+                                    for stat in PLAYER_COMPONENTS[key]) for box in boxes
                             ], dtype=float)
                         raw_values = samples[sample_key]
                         if raw_values is None:
@@ -168,4 +187,4 @@ def build_edge_report(cache: dict, event: dict, games: list[SimulatedGame],
             "readiness_reasons": sorted(set(reasons)), "offers": offers, "skipped": sorted(set(skipped)),
             "validation_status": "unvalidated",
             "interpretation": "Apparent model edge, not a demonstrated betting advantage. EV is expected profit per unit staked. The lower bound covers Monte Carlo sampling only, not model error or searching many offers. No staking advice.",
-            "settlement_assumption": "Full-game markets include overtime; whole-number ties push. Check your bookmaker's rules, especially player participation and voids."}
+            "settlement_assumption": "Full-game markets include overtime; Q1 uses first-quarter scores only. Whole-number ties push. Player DNPs void. Verify the exact line, odds and rules at your bookmaker."}
